@@ -256,6 +256,10 @@ func (s *AnthropicStreamSender) SendEvent(c *gin.Context, data any) error {
 			eventType = v.Type
 		case *types.MessageStopEvent:
 			eventType = v.Type
+		case *types.PingEvent:
+			eventType = v.Type
+		case *types.GenericOrderedEvent:
+			eventType = v.Type
 		case *types.ErrorEvent:
 			eventType = v.Type
 		}
@@ -265,8 +269,6 @@ func (s *AnthropicStreamSender) SendEvent(c *gin.Context, data any) error {
 	if err != nil {
 		return err
 	}
-
-	// utils.Log("发送SSE事件", utils.LogString("event", eventType))
 
 	fmt.Fprintf(c.Writer, "event: %s\n", eventType)
 	fmt.Fprintf(c.Writer, "data: %s\n\n", string(json))
@@ -291,24 +293,27 @@ func convertToOrderedStruct(m map[string]any) any {
 		return convertMessageDelta(m)
 	case "message_stop":
 		return types.NewMessageStopEvent()
+	case "ping":
+		return types.NewPingEvent()
 	case "error":
 		return convertError(m)
 	default:
-		return m // 未知类型保持原样
+		// 未知类型使用 GenericOrderedEvent 确保 type 在前
+		return types.NewGenericOrderedEvent(eventType, m)
 	}
 }
 
 func convertMessageStart(m map[string]any) *types.MessageStartEvent {
-	msg := &types.MessageInfo{}
+	msg := &types.MessageInfo{
+		Content: []any{}, // 确保 Content 始终是空数组而不是 nil
+	}
 	if message, ok := m["message"].(map[string]any); ok {
 		msg.ID, _ = message["id"].(string)
 		msg.Type, _ = message["type"].(string)
 		msg.Role, _ = message["role"].(string)
 		msg.Model, _ = message["model"].(string)
-		if content, ok := message["content"].([]any); ok {
+		if content, ok := message["content"].([]any); ok && content != nil {
 			msg.Content = content
-		} else {
-			msg.Content = []any{}
 		}
 		if usage, ok := message["usage"].(map[string]any); ok {
 			msg.Usage = &types.UsageInfo{}
@@ -347,7 +352,11 @@ func convertContentBlockStart(m map[string]any) *types.ContentBlockStartEvent {
 		index = int(v)
 	}
 
-	var block any
+	// 默认为空文本块，确保 content_block 不为 null
+	var block any = &types.SSETextContentBlock{
+		Type: "text",
+		Text: "",
+	}
 	if cb, ok := m["content_block"].(map[string]any); ok {
 		blockType, _ := cb["type"].(string)
 		if blockType == "text" {
@@ -357,8 +366,20 @@ func convertContentBlockStart(m map[string]any) *types.ContentBlockStartEvent {
 				Type: "text",
 				Text: text,
 			}
-		} else {
-			// 其他类型（如 tool_use）
+		} else if blockType == "tool_use" {
+			// 工具使用块：使用专用结构体确保 input 字段始终存在
+			toolBlock := &types.SSEToolUseContentBlock{
+				Type:  "tool_use",
+				Input: map[string]any{}, // 确保 input 不为 null
+			}
+			toolBlock.ID, _ = cb["id"].(string)
+			toolBlock.Name, _ = cb["name"].(string)
+			if input, exists := cb["input"]; exists && input != nil {
+				toolBlock.Input = input
+			}
+			block = toolBlock
+		} else if blockType != "" {
+			// 其他已知类型
 			sseBlock := &types.SSEContentBlock{}
 			sseBlock.Type = blockType
 			sseBlock.Text, _ = cb["text"].(string)
@@ -381,12 +402,34 @@ func convertContentBlockDelta(m map[string]any) *types.ContentBlockDeltaEvent {
 		index = int(v)
 	}
 
-	delta := &types.DeltaBlock{}
+	// 解析 delta 类型
+	deltaType := "text_delta"
+	text := ""
+	partialJSON := ""
 	if d, ok := m["delta"].(map[string]any); ok {
-		delta.Type, _ = d["type"].(string)
-		delta.Text, _ = d["text"].(string)
-		delta.PartialJSON, _ = d["partial_json"].(string)
+		if t, ok := d["type"].(string); ok && t != "" {
+			deltaType = t
+		}
+		text, _ = d["text"].(string)
+		partialJSON, _ = d["partial_json"].(string)
 	}
+
+	// 根据 delta 类型返回相应的结构体（确保字段始终存在）
+	var delta any
+	switch deltaType {
+	case "input_json_delta":
+		delta = &types.InputJSONDeltaBlock{
+			Type:        deltaType,
+			PartialJSON: partialJSON,
+		}
+	default:
+		// text_delta 或其他类型
+		delta = &types.TextDeltaBlock{
+			Type: deltaType,
+			Text: text,
+		}
+	}
+
 	return types.NewContentBlockDeltaEvent(index, delta)
 }
 

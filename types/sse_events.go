@@ -1,5 +1,10 @@
 package types
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // ==================== SSE 事件结构（保证 type 字段在最前） ====================
 
 // MessageStartEvent message_start 事件
@@ -29,11 +34,11 @@ type UsageInfo struct {
 }
 
 // ContentBlockStartEvent content_block_start 事件
-// 字段顺序: type, content_block, index (与官方 Claude API 一致)
+// 字段顺序: type, index, content_block (与官方 Claude API 一致)
 type ContentBlockStartEvent struct {
 	Type         string `json:"type"`
-	ContentBlock any    `json:"content_block"`
 	Index        int    `json:"index"`
+	ContentBlock any    `json:"content_block"`
 }
 
 // SSEContentBlock SSE 事件专用内容块（与 anthropic.ContentBlock 区分）
@@ -46,6 +51,14 @@ type SSEContentBlock struct {
 	Input any    `json:"input,omitempty"`
 }
 
+// SSEToolUseContentBlock 工具使用内容块（input 字段始终显示）
+type SSEToolUseContentBlock struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Input any    `json:"input"`
+}
+
 // SSETextContentBlock 文本内容块（text 字段始终显示）
 type SSETextContentBlock struct {
 	Type string `json:"type"`
@@ -53,11 +66,11 @@ type SSETextContentBlock struct {
 }
 
 // ContentBlockDeltaEvent content_block_delta 事件
-// 字段顺序: type, delta, index (与官方 Claude API 一致)
+// 字段顺序: type, index, delta (与官方 Claude API 一致)
 type ContentBlockDeltaEvent struct {
-	Type  string      `json:"type"`
-	Delta *DeltaBlock `json:"delta"`
-	Index int         `json:"index"`
+	Type  string `json:"type"`
+	Index int    `json:"index"`
+	Delta any    `json:"delta"`
 }
 
 // DeltaBlock delta 块
@@ -65,6 +78,18 @@ type DeltaBlock struct {
 	Type        string `json:"type"`
 	Text        string `json:"text,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
+}
+
+// TextDeltaBlock 文本增量块（text 字段始终显示）
+type TextDeltaBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// InputJSONDeltaBlock JSON 增量块（partial_json 字段始终显示）
+type InputJSONDeltaBlock struct {
+	Type        string `json:"type"`
+	PartialJSON string `json:"partial_json"`
 }
 
 // ContentBlockStopEvent content_block_stop 事件
@@ -90,6 +115,59 @@ type MessageDeltaInfo struct {
 // MessageStopEvent message_stop 事件
 type MessageStopEvent struct {
 	Type string `json:"type"`
+}
+
+// PingEvent ping 事件
+type PingEvent struct {
+	Type string `json:"type"`
+}
+
+// GenericOrderedEvent 通用有序事件（确保 type 在最前面）
+type GenericOrderedEvent struct {
+	Type string         `json:"type"`
+	Data map[string]any `json:"-"`
+}
+
+// MarshalJSON 自定义 JSON 序列化，确保 type 在最前面
+func (e *GenericOrderedEvent) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString(`{"type":`)
+
+	typeJSON, err := json.Marshal(e.Type)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(typeJSON)
+
+	// 添加其他字段
+	for k, v := range e.Data {
+		if k == "type" {
+			continue
+		}
+		buf.WriteString(",")
+		keyJSON, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(keyJSON)
+		buf.WriteString(":")
+		valJSON, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(valJSON)
+	}
+
+	buf.WriteString("}")
+	return buf.Bytes(), nil
+}
+
+// NewGenericOrderedEvent 创建通用有序事件
+func NewGenericOrderedEvent(eventType string, data map[string]any) *GenericOrderedEvent {
+	return &GenericOrderedEvent{
+		Type: eventType,
+		Data: data,
+	}
 }
 
 // ErrorEvent error 事件
@@ -118,8 +196,8 @@ func NewMessageStartEvent(msg *MessageInfo) *MessageStartEvent {
 func NewContentBlockStartEvent(index int, block any) *ContentBlockStartEvent {
 	return &ContentBlockStartEvent{
 		Type:         "content_block_start",
-		ContentBlock: block,
 		Index:        index,
+		ContentBlock: block,
 	}
 }
 
@@ -145,7 +223,7 @@ func NewToolUseContentBlock(id, name string, input any) *SSEContentBlock {
 }
 
 // NewContentBlockDeltaEvent 创建 content_block_delta 事件
-func NewContentBlockDeltaEvent(index int, delta *DeltaBlock) *ContentBlockDeltaEvent {
+func NewContentBlockDeltaEvent(index int, delta any) *ContentBlockDeltaEvent {
 	return &ContentBlockDeltaEvent{
 		Type:  "content_block_delta",
 		Index: index,
@@ -192,6 +270,13 @@ func NewMessageDeltaEvent(stopReason string, usage *UsageInfo) *MessageDeltaEven
 func NewMessageStopEvent() *MessageStopEvent {
 	return &MessageStopEvent{
 		Type: "message_stop",
+	}
+}
+
+// NewPingEvent 创建 ping 事件
+func NewPingEvent() *PingEvent {
+	return &PingEvent{
+		Type: "ping",
 	}
 }
 

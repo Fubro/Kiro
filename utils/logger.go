@@ -100,3 +100,4 @@ func LogErr(err error) LogField {
 	}
 	return LogField{Key: "error", Value: err.Error()}
 }
+
