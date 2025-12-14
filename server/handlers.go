@@ -66,27 +66,34 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 	}
 	inputTokens := estimator.EstimateTokens(countReq)
 
-	// 初始化SSE响应
-	if err := initializeSSEResponse(c); err != nil {
-		_ = sender.SendError(c, "连接不支持SSE刷新", err)
-		return
-	}
-
 	// 生成消息ID并注入上下文
 	messageID := fmt.Sprintf(config.MessageIDFormat, time.Now().Format(config.MessageIDTimeFormat))
 	c.Set("message_id", messageID)
 
-	// 执行CodeWhisperer请求
+	// 先执行上游请求，确保成功后再建立 SSE 连接
 	resp, err := execCWRequest(c, anthropicReq, token, true)
 	if err != nil {
 		var modelNotFoundErrorType *types.ModelNotFoundErrorType
 		if errors.As(err, &modelNotFoundErrorType) {
 			return
 		}
-		_ = sender.SendError(c, "构建请求失败", err)
+		// 上游请求失败，返回 HTTP 错误（不建立 SSE 连接）
+		var upstreamErr *UpstreamError
+		if errors.As(err, &upstreamErr) {
+			respondErrorWithCode(c, upstreamErr.StatusCode, "upstream_error", "%s", upstreamErr.Message)
+		} else {
+			respondError(c, http.StatusBadGateway, "%s", err.Error())
+		}
 		return
 	}
 	defer resp.Body.Close()
+
+	// 上游成功，初始化 SSE 响应
+	if err := initializeSSEResponse(c); err != nil {
+		resp.Body.Close()
+		respondError(c, http.StatusInternalServerError, "连接不支持SSE: %v", err)
+		return
+	}
 
 	// 创建流处理上下文
 	ctx := NewStreamProcessorContext(c, anthropicReq, token, sender, messageID, inputTokens)

@@ -24,6 +24,13 @@ type AnthropicRequest struct {
 	Stream      bool                      `json:"stream"`
 	Temperature *float64                  `json:"temperature,omitempty"`
 	Metadata    map[string]any            `json:"metadata,omitempty"`
+	Thinking    *ThinkingConfig           `json:"thinking,omitempty"` // Thinking 模式配置
+}
+
+// ThinkingConfig 表示 Thinking 模式配置
+type ThinkingConfig struct {
+	Type         string `json:"type"`                    // "enabled" 或 "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考预算 token 数
 }
 
 // AnthropicStreamResponse 表示 Anthropic 流式响应的结构

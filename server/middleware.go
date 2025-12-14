@@ -39,19 +39,20 @@ func AuthMiddleware() gin.HandlerFunc {
 		// 获取或刷新 access token
 		accessToken, err := GetOrRefreshToken(token)
 		if err != nil {
-			utils.Log("Token 认证失败", utils.LogErr(err))
+			utils.Error("Token 认证失败: %v", err)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{
 					"type":    "authentication_error",
-					"message": "Failed to refresh access token",
+					"message": "Identity verification fails, please check its validity",
 				},
 			})
 			c.Abort()
 			return
 		}
 
-		// 将 access token 存入上下文
+		// 将 access token 和原始 refresh token 存入上下文
 		c.Set("accessToken", accessToken)
+		c.Set("refreshToken", token)
 		c.Next()
 	}
 }

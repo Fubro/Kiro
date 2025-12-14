@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"kiro/config"
+	"strings"
 
 	"kiro/types"
 	"kiro/utils"
@@ -22,6 +23,10 @@ type TokenCache struct {
 	AccessToken  string
 	RefreshToken string
 	LastRefresh  time.Time
+	TokenType    types.TokenType
+	// AmazonQ 专用字段
+	ClientID     string
+	ClientSecret string
 }
 
 var (
@@ -40,9 +45,73 @@ func sha256Hash(text string) string {
 }
 
 /**
- * RefreshToken 刷新 token
+ * ParseToken 解析 token 格式，判断是 Kiro 还是 AmazonQ
+ * AmazonQ 格式: clientId:clientSecret:refreshToken
+ * Kiro 格式: refreshToken (单段)
  */
-func RefreshToken(refreshToken string) (string, error) {
+func ParseToken(token string) (tokenType types.TokenType, clientID, clientSecret, refreshToken string) {
+	parts := strings.SplitN(token, ":", 3)
+	if len(parts) == 3 && parts[0] != "" && parts[2] != "" {
+		return types.TokenTypeAmazonQ, parts[0], parts[1], parts[2]
+	}
+	return types.TokenTypeKiro, "", "", token
+}
+
+/**
+ * RefreshAmazonQToken 刷新 AmazonQ token
+ */
+func RefreshAmazonQToken(clientID, clientSecret, refreshToken string) (string, error) {
+	refreshReq := types.AmazonQRefreshRequest{
+		GrantType:    "refresh_token",
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RefreshToken: refreshToken,
+	}
+
+	reqBody, err := utils.FastMarshal(refreshReq)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", config.AmazonQTokenURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	for k, v := range config.AmazonQOIDCHeaders {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
+
+	client := utils.SharedHTTPClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("刷新失败: 状态码 %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	var refreshResp types.RefreshResponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应失败: %v", err)
+	}
+
+	if err := utils.SafeUnmarshal(body, &refreshResp); err != nil {
+		return "", fmt.Errorf("解析响应失败: %v", err)
+	}
+
+	return refreshResp.AccessToken, nil
+}
+
+/**
+ * RefreshKiroToken 刷新 Kiro token
+ */
+func RefreshKiroToken(refreshToken string) (string, error) {
 	refreshReq := types.RefreshRequest{
 		RefreshToken: refreshToken,
 	}
@@ -85,7 +154,7 @@ func RefreshToken(refreshToken string) (string, error) {
 }
 
 /**
- * GetOrRefreshToken 获取或刷新 token
+ * GetOrRefreshToken 获取或刷新 token，自动识别 Kiro 或 AmazonQ 格式
  */
 func GetOrRefreshToken(token string) (string, error) {
 	tokenHash := sha256Hash(token)
@@ -99,8 +168,19 @@ func GetOrRefreshToken(token string) (string, error) {
 		return cached.AccessToken, nil
 	}
 
-	// 刷新 token
-	accessToken, err := RefreshToken(token)
+	// 解析 token 类型
+	tokenType, clientID, clientSecret, refreshToken := ParseToken(token)
+
+	var accessToken string
+	var err error
+
+	switch tokenType {
+	case types.TokenTypeAmazonQ:
+		accessToken, err = RefreshAmazonQToken(clientID, clientSecret, refreshToken)
+	default:
+		accessToken, err = RefreshKiroToken(refreshToken)
+	}
+
 	if err != nil {
 		return "", err
 	}
@@ -109,12 +189,26 @@ func GetOrRefreshToken(token string) (string, error) {
 	tokenMutex.Lock()
 	tokenMap[tokenHash] = &TokenCache{
 		AccessToken:  accessToken,
-		RefreshToken: token,
+		RefreshToken: refreshToken,
 		LastRefresh:  time.Now(),
+		TokenType:    tokenType,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 	tokenMutex.Unlock()
 
 	return accessToken, nil
+}
+
+/**
+ * InvalidateToken 使指定的 token 缓存失效
+ * 当上游返回 403 表示 token 已过期时调用
+ */
+func InvalidateToken(token string) {
+	tokenHash := sha256Hash(token)
+	tokenMutex.Lock()
+	delete(tokenMap, tokenHash)
+	tokenMutex.Unlock()
 }
 
 /**
@@ -129,7 +223,6 @@ func RefreshAllTokens() {
 		return
 	}
 
-	utils.Log("开始 token 刷新周期", utils.LogInt("total_tokens", count))
 	refreshCount := 0
 
 	tokenMutex.RLock()
@@ -140,12 +233,18 @@ func RefreshAllTokens() {
 	tokenMutex.RUnlock()
 
 	for hash, cache := range tokens {
-		newToken, err := RefreshToken(cache.RefreshToken)
+		var newToken string
+		var err error
+
+		switch cache.TokenType {
+		case types.TokenTypeAmazonQ:
+			newToken, err = RefreshAmazonQToken(cache.ClientID, cache.ClientSecret, cache.RefreshToken)
+		default:
+			newToken, err = RefreshKiroToken(cache.RefreshToken)
+		}
 
 		if err != nil {
-			utils.Log("刷新 token 失败，从缓存中移除",
-				utils.LogString("hash_prefix", hash[:8]),
-				utils.LogErr(err))
+			utils.Error("刷新 token 失败: %v", err)
 			tokenMutex.Lock()
 			delete(tokenMap, hash)
 			tokenMutex.Unlock()
@@ -162,9 +261,7 @@ func RefreshAllTokens() {
 		refreshCount++
 	}
 
-	utils.Log("token 刷新完成",
-		utils.LogInt("refreshed", refreshCount),
-		utils.LogInt("total", count))
+	utils.Info("Token 刷新完成: %d/%d", refreshCount, count)
 }
 
 /**
@@ -181,5 +278,5 @@ func StartTokenRefresher() {
 		}
 	}()
 
-	utils.Log("Token 自动刷新器已启动", utils.LogString("interval", "45分钟"))
+	utils.Info("Token 自动刷新器已启动 (间隔: 45分钟)")
 }

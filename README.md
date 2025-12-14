@@ -20,7 +20,23 @@
 
 ## 认证方式
 
-请求时通过 `x-api-key` 或 `Authorization: Bearer` 传入 Kiro 的 `refreshToken`。
+通过 `x-api-key` 或 `Authorization: Bearer` 传入 Token，支持两种格式：
+
+### Kiro 格式
+
+直接使用 Kiro 的 `refreshToken`：
+
+```
+x-api-key: YOUR_REFRESH_TOKEN
+```
+
+### AmazonQ 格式
+
+使用 `clientId:clientSecret:refreshToken` 组合：
+
+```
+x-api-key: CLIENT_ID:CLIENT_SECRET:REFRESH_TOKEN
+```
 
 ## 快速开始
 
@@ -50,6 +66,13 @@ docker run -d -p 1188:1188 ghcr.io/mamocode/kiro:latest
 |------|------|--------|
 | `PORT` | 服务端口 | 1188 |
 | `GIN_MODE` | 运行模式 (release/debug) | release |
+| `DEBUG` | 启用调试日志 (1/true) | - |
+
+### 日志级别
+
+- `GIN_MODE=release`: 只输出错误日志
+- 默认: 输出 INFO 和 ERROR 日志
+- `DEBUG=1`: 输出所有日志（包括调试信息）
 
 ## 使用示例
 

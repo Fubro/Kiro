@@ -6,26 +6,33 @@ import (
 )
 
 // CodeWhispererRequest 表示 CodeWhisperer API 的请求结构
+// 格式参考 CLIProxyAPIPlus 项目
 type CodeWhispererRequest struct {
 	ConversationState struct {
-		AgentContinuationId string `json:"agentContinuationId"` // 代理延续ID，用于追踪代理会话
-		AgentTaskType       string `json:"agentTaskType"`       // 代理任务类型，通常为"vibe"
-		ChatTriggerType     string `json:"chatTriggerType"`
-		CurrentMessage      struct {
+		ChatTriggerType string `json:"chatTriggerType"`
+		ConversationId  string `json:"conversationId"`
+		CurrentMessage  struct {
 			UserInputMessage struct {
+				Content                 string               `json:"content"`
+				ModelId                 string               `json:"modelId"`
+				Origin                  string               `json:"origin"`
+				Images                  []CodeWhispererImage `json:"images,omitempty"`
 				UserInputMessageContext struct {
-					ToolResults []ToolResult        `json:"toolResults,omitempty"`
 					Tools       []CodeWhispererTool `json:"tools,omitempty"`
-				} `json:"userInputMessageContext"`
-				Content string               `json:"content"`
-				ModelId string               `json:"modelId"`
-				Images  []CodeWhispererImage `json:"images"`
-				Origin  string               `json:"origin"`
+					ToolResults []ToolResult        `json:"toolResults,omitempty"`
+				} `json:"userInputMessageContext,omitempty"`
 			} `json:"userInputMessage"`
 		} `json:"currentMessage"`
-		ConversationId string `json:"conversationId"`
-		History        []any  `json:"history"`
+		History []any `json:"history,omitempty"`
 	} `json:"conversationState"`
+	ProfileArn      string           `json:"profileArn,omitempty"`
+	InferenceConfig *InferenceConfig `json:"inferenceConfig,omitempty"`
+}
+
+// InferenceConfig 推理配置参数
+type InferenceConfig struct {
+	MaxTokens   int     `json:"maxTokens,omitempty"`
+	Temperature float64 `json:"temperature,omitempty"`
 }
 
 // CodeWhispererImage 表示 CodeWhisperer API 的图片结构

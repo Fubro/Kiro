@@ -45,3 +45,19 @@ type RefreshResponse struct {
 type RefreshRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
+
+// AmazonQRefreshRequest AmazonQ token刷新请求结构
+type AmazonQRefreshRequest struct {
+	GrantType    string `json:"grantType"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	RefreshToken string `json:"refreshToken"`
+}
+
+// TokenType 认证类型枚举
+type TokenType int
+
+const (
+	TokenTypeKiro    TokenType = iota // Kiro 单段式 refreshToken
+	TokenTypeAmazonQ                  // AmazonQ 三段式 clientId:clientSecret:refreshToken
+)

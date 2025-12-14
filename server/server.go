@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -75,7 +74,7 @@ func StartServer(port string) {
 		// 读取请求体
 		body, err := c.GetRawData()
 		if err != nil {
-			utils.Log("读取请求体失败", utils.LogErr(err))
+			utils.Error("读取请求体失败: %v", err)
 			respondError(c, http.StatusBadRequest, "读取请求体失败: %v", err)
 			return
 		}
@@ -83,7 +82,7 @@ func StartServer(port string) {
 		// 先解析为通用map以便处理工具格式
 		var rawReq map[string]any
 		if err := utils.SafeUnmarshal(body, &rawReq); err != nil {
-			utils.Log("解析请求体失败", utils.LogErr(err))
+			utils.Error("解析请求体失败: %v", err)
 			respondError(c, http.StatusBadRequest, "解析请求体失败: %v", err)
 			return
 		}
@@ -117,21 +116,21 @@ func StartServer(port string) {
 		// 重新序列化并解析为AnthropicRequest
 		normalizedBody, err := utils.SafeMarshal(rawReq)
 		if err != nil {
-			utils.Log("重新序列化请求失败", utils.LogErr(err))
+			utils.Error("重新序列化请求失败: %v", err)
 			respondError(c, http.StatusBadRequest, "处理请求格式失败: %v", err)
 			return
 		}
 
 		var anthropicReq types.AnthropicRequest
 		if err := utils.SafeUnmarshal(normalizedBody, &anthropicReq); err != nil {
-			utils.Log("解析标准化请求体失败", utils.LogErr(err))
+			utils.Error("解析标准化请求体失败: %v", err)
 			respondError(c, http.StatusBadRequest, "解析请求体失败: %v", err)
 			return
 		}
 
 		// 验证请求的有效性
 		if len(anthropicReq.Messages) == 0 {
-			utils.Log("请求中没有消息")
+			utils.Error("请求中没有消息")
 			respondError(c, http.StatusBadRequest, "%s", "messages 数组不能为空")
 			return
 		}
@@ -140,18 +139,13 @@ func StartServer(port string) {
 		lastMsg := anthropicReq.Messages[len(anthropicReq.Messages)-1]
 		content, err := utils.GetMessageContent(lastMsg.Content)
 		if err != nil {
-			utils.Log("获取消息内容失败",
-				utils.LogErr(err),
-				utils.LogString("raw_content", fmt.Sprintf("%v", lastMsg.Content)))
+			utils.Error("获取消息内容失败: %v", err)
 			respondError(c, http.StatusBadRequest, "获取消息内容失败: %v", err)
 			return
 		}
 
 		trimmedContent := strings.TrimSpace(content)
 		if trimmedContent == "" || trimmedContent == "answer for user question" {
-			utils.Log("消息内容为空或无效",
-				utils.LogString("content", content),
-				utils.LogString("trimmed_content", trimmedContent))
 			respondError(c, http.StatusBadRequest, "%s", "消息内容不能为空")
 			return
 		}
@@ -168,9 +162,6 @@ func StartServer(port string) {
 	r.POST("/v1/messages/count_tokens", handleCountTokens)
 
 	r.NoRoute(func(c *gin.Context) {
-		utils.Log("访问未知端点",
-			utils.LogString("path", c.Request.URL.Path),
-			utils.LogString("method", c.Request.Method))
 		respondError(c, http.StatusNotFound, "%s", "404 未找到")
 	})
 
@@ -181,7 +172,7 @@ func StartServer(port string) {
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		utils.Log("启动服务器失败", utils.LogErr(err), utils.LogString("port", port))
+		utils.Error("启动服务器失败: %v, port: %s", err, port)
 		os.Exit(1)
 	}
 }

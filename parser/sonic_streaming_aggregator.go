@@ -44,8 +44,7 @@ type SonicParseState struct {
 
 // NewSonicStreamingJSONAggregatorWithCallback 创建带回调的Sonic流式JSON聚合器
 func NewSonicStreamingJSONAggregatorWithCallback(callback ToolParamsUpdateCallback) *SonicStreamingJSONAggregator {
-	utils.Log("创建Sonic流式JSON聚合器",
-		utils.LogBool("has_callback", callback != nil))
+	// utils.Log("创建Sonic流式JSON聚合器")
 
 	return &SonicStreamingJSONAggregator{
 		activeStreamers: make(map[string]*SonicJSONStreamer),
@@ -63,19 +62,12 @@ func (ssja *SonicStreamingJSONAggregator) ProcessToolData(toolUseId, name, input
 	if !exists {
 		streamer = ssja.createSonicJSONStreamer(toolUseId, name)
 		ssja.activeStreamers[toolUseId] = streamer
-
-		utils.Log("创建Sonic JSON流式解析器",
-			utils.LogString("toolUseId", toolUseId),
-			utils.LogString("toolName", name))
 	}
 
 	// 处理输入片段
 	if input != "" {
 		if err := streamer.appendFragment(input); err != nil {
-			utils.Log("追加JSON片段到Sonic解析器失败",
-				utils.LogString("toolUseId", toolUseId),
-				utils.LogString("fragment", input),
-				utils.LogErr(err))
+			utils.Error("追加JSON片段到Sonic解析器失败: toolUseId=%s, err=%v", toolUseId, err)
 		}
 	}
 
@@ -88,13 +80,6 @@ func (ssja *SonicStreamingJSONAggregator) ProcessToolData(toolUseId, name, input
 	// 收到停止信号，使用Sonic尝试解析当前缓冲区
 	parseResult := streamer.tryParseWithSonic()
 
-	utils.Log("Sonic流式JSON解析完成",
-		utils.LogString("toolUseId", toolUseId),
-		utils.LogString("parseStatus", parseResult),
-		utils.LogBool("hasValidJSON", streamer.state.hasValidJSON),
-		utils.LogInt("fragmentCount", streamer.fragmentCount),
-		utils.LogInt("totalBytes", streamer.totalBytes))
-
 	streamer.isComplete = true
 
 	if streamer.state.hasValidJSON && streamer.result != nil {
@@ -102,27 +87,17 @@ func (ssja *SonicStreamingJSONAggregator) ProcessToolData(toolUseId, name, input
 		if jsonBytes, err := utils.FastMarshal(streamer.result); err == nil {
 			fullInput = string(jsonBytes)
 		} else {
-			utils.Log("Sonic序列化失败，无法生成工具输入",
-				utils.LogErr(err),
-				utils.LogString("toolName", streamer.toolName))
+			utils.Error("Sonic序列化失败: toolName=%s, err=%v", streamer.toolName, err)
 			// 使用空JSON对象，让工具调用失败
 			fullInput = "{}"
 		}
 	} else {
-		// 🔥 核心修复：区分真正的错误和无参数工具
+		// 区分真正的错误和无参数工具
 		if streamer.fragmentCount == 0 && streamer.totalBytes == 0 {
-			// 无参数工具，使用 Debug 级别（正常情况）
-			utils.Log("工具无参数，使用默认空对象",
-				utils.LogString("toolName", streamer.toolName))
+			// 无参数工具，正常情况
 		} else {
-			// 真正的解析失败，使用 Error 级别
-			utils.Log("流式解析失败，无有效JSON结果",
-				utils.LogString("toolName", streamer.toolName),
-				utils.LogString("toolUseId", streamer.toolUseId),
-				utils.LogString("buffer", streamer.buffer.String()),
-				utils.LogBool("hasValidJSON", streamer.state.hasValidJSON),
-				utils.LogInt("fragmentCount", streamer.fragmentCount),
-				utils.LogInt("totalBytes", streamer.totalBytes))
+			// 真正的解析失败
+			utils.Error("流式解析失败: toolName=%s, status=%s", streamer.toolName, parseResult)
 		}
 		// 使用空JSON对象
 		fullInput = "{}"
@@ -134,18 +109,6 @@ func (ssja *SonicStreamingJSONAggregator) ProcessToolData(toolUseId, name, input
 
 	// 触发回调
 	ssja.onAggregationComplete(toolUseId, fullInput)
-
-	utils.Log("Sonic流式JSON聚合完成",
-		utils.LogString("toolUseId", toolUseId),
-		utils.LogString("toolName", name),
-		utils.LogString("result", func() string {
-			if len(fullInput) > 100 {
-				return fullInput[:100] + "..."
-			}
-			return fullInput
-		}()),
-		utils.LogInt("totalFragments", streamer.fragmentCount),
-		utils.LogInt("totalBytes", streamer.totalBytes))
 
 	return true, fullInput
 }
@@ -201,10 +164,6 @@ func (sjs *SonicJSONStreamer) ensureUTF8Integrity(fragment string) string {
 		} else if b&0xE0 == 0xC0 {
 			// 2字节UTF-8序列开始
 			if n-i < 2 {
-				utils.Log("检测到截断的UTF-8字符(2字节)",
-					utils.LogString("toolUseId", sjs.toolUseId),
-					utils.LogInt("position", i),
-					utils.LogString("fragment_end", fragment[utils.IntMax(0, len(fragment)-10):]))
 				// 保存截断的字符到下一个片段处理
 				sjs.incompleteUTF8 = string(bytes[i:])
 				return string(bytes[:i])
@@ -213,10 +172,6 @@ func (sjs *SonicJSONStreamer) ensureUTF8Integrity(fragment string) string {
 		} else if b&0xF0 == 0xE0 {
 			// 3字节UTF-8序列开始
 			if n-i < 3 {
-				utils.Log("检测到截断的UTF-8字符(3字节)",
-					utils.LogString("toolUseId", sjs.toolUseId),
-					utils.LogInt("position", i),
-					utils.LogString("fragment_end", fragment[utils.IntMax(0, len(fragment)-10):]))
 				sjs.incompleteUTF8 = string(bytes[i:])
 				return string(bytes[:i])
 			}
@@ -224,10 +179,6 @@ func (sjs *SonicJSONStreamer) ensureUTF8Integrity(fragment string) string {
 		} else if b&0xF8 == 0xF0 {
 			// 4字节UTF-8序列开始
 			if n-i < 4 {
-				utils.Log("检测到截断的UTF-8字符(4字节)",
-					utils.LogString("toolUseId", sjs.toolUseId),
-					utils.LogInt("position", i),
-					utils.LogString("fragment_end", fragment[utils.IntMax(0, len(fragment)-10):]))
 				sjs.incompleteUTF8 = string(bytes[i:])
 				return string(bytes[:i])
 			}
@@ -239,11 +190,6 @@ func (sjs *SonicJSONStreamer) ensureUTF8Integrity(fragment string) string {
 	// 检查是否有之前的不完整UTF-8字符需要拼接
 	if sjs.incompleteUTF8 != "" {
 		combined := sjs.incompleteUTF8 + fragment
-		utils.Log("恢复截断的UTF-8字符",
-			utils.LogString("toolUseId", sjs.toolUseId),
-			utils.LogString("incomplete", sjs.incompleteUTF8),
-			utils.LogString("current_fragment", fragment[:min(10, len(fragment))]),
-			utils.LogString("combined_start", combined[:min(20, len(combined))]))
 		sjs.incompleteUTF8 = ""                  // 清空
 		return sjs.ensureUTF8Integrity(combined) // 递归处理合并结果
 	}
@@ -276,9 +222,6 @@ func (sjs *SonicJSONStreamer) tryParseWithSonic() string {
 	if err := utils.FastUnmarshal(content, &result); err == nil {
 		sjs.result = result
 		sjs.state.hasValidJSON = true
-		utils.Log("Sonic完整JSON解析成功",
-			utils.LogString("toolUseId", sjs.toolUseId),
-			utils.LogInt("resultKeys", len(result)))
 		return "complete"
 	}
 
@@ -289,9 +232,6 @@ func (sjs *SonicJSONStreamer) tryParseWithSonic() string {
 func (ssja *SonicStreamingJSONAggregator) onAggregationComplete(toolUseId string, fullInput string) {
 	if ssja.updateCallback != nil {
 		ssja.updateCallback(toolUseId, fullInput)
-	} else {
-		utils.Log("Sonic聚合回调函数为空",
-			utils.LogString("toolUseId", toolUseId))
 	}
 }
 

@@ -91,16 +91,7 @@ func (cmp *CompliantMessageProcessor) ProcessMessage(message *EventStreamMessage
 	messageType := message.GetMessageType()
 	eventType := message.GetEventType()
 
-	utils.Log("处理消息",
-		utils.LogString("message_type", messageType),
-		utils.LogString("event_type", eventType),
-		utils.LogInt("payload_len", len(message.Payload)),
-		utils.LogString("payload_preview", func() string {
-			if len(message.Payload) > 100 {
-				return string(message.Payload[:100]) + "..."
-			}
-			return string(message.Payload)
-		}()))
+	// utils.Log("处理消息", utils.LogString("event_type", eventType))
 
 	// 根据消息类型分别处理
 	switch messageType {
@@ -123,16 +114,7 @@ func (cmp *CompliantMessageProcessor) processEventMessage(message *EventStreamMe
 		return handler.Handle(message)
 	}
 
-	// 未知事件类型，记录日志但不报错
-	utils.Log("未知事件类型",
-		utils.LogString("event_type", eventType),
-		utils.LogAny("available_handlers", func() []string {
-			var keys []string
-			for k := range cmp.eventHandlers {
-				keys = append(keys, k)
-			}
-			return keys
-		}()))
+	// 未知事件类型，静默忽略
 	return []SSEEvent{}, nil
 }
 
@@ -141,7 +123,7 @@ func (cmp *CompliantMessageProcessor) processErrorMessage(message *EventStreamMe
 	var errorData map[string]any
 	if len(message.Payload) > 0 {
 		if err := utils.FastUnmarshal(message.Payload, &errorData); err != nil {
-			utils.Log("解析错误消息载荷失败", utils.LogErr(err))
+			utils.Error("解析错误消息载荷失败: %v", err)
 			errorData = map[string]any{
 				"message": string(message.Payload),
 			}
@@ -178,7 +160,7 @@ func (cmp *CompliantMessageProcessor) processExceptionMessage(message *EventStre
 	var exceptionData map[string]any
 	if len(message.Payload) > 0 {
 		if err := utils.FastUnmarshal(message.Payload, &exceptionData); err != nil {
-			utils.Log("解析异常消息载荷失败", utils.LogErr(err))
+			utils.Error("解析异常消息载荷失败: %v", err)
 			exceptionData = map[string]any{
 				"message": string(message.Payload),
 			}

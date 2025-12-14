@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"kiro/config"
 	"kiro/converter"
@@ -15,6 +14,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// UpstreamError 上游 API 错误类型
+type UpstreamError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpstreamError) Error() string {
+	return e.Message
+}
 
 // respondErrorWithCode 标准化的错误响应结构
 // 统一返回: {"error": {"message": string, "code": string}}
@@ -49,17 +58,17 @@ func respondError(c *gin.Context, statusCode int, format string, args ...any) {
 
 // 通用请求处理错误函数
 func handleRequestBuildError(c *gin.Context, err error) {
-	utils.Log("构建请求失败", addReqFields(c, utils.LogErr(err))...)
+	utils.Error("构建请求失败: %v", err)
 	respondError(c, http.StatusInternalServerError, "构建请求失败: %v", err)
 }
 
 func handleRequestSendError(c *gin.Context, err error) {
-	utils.Log("发送请求失败", addReqFields(c, utils.LogErr(err))...)
+	utils.Error("发送请求失败: %v", err)
 	respondError(c, http.StatusInternalServerError, "发送请求失败: %v", err)
 }
 
 func handleResponseReadError(c *gin.Context, err error) {
-	utils.Log("读取响应体失败", addReqFields(c, utils.LogErr(err))...)
+	utils.Error("读取响应体失败: %v", err)
 	respondError(c, http.StatusInternalServerError, "读取响应体失败: %v", err)
 }
 
@@ -77,8 +86,6 @@ func filterSupportedTools(tools []types.AnthropicTool) []types.AnthropicTool {
 	for _, tool := range tools {
 		// 过滤不支持的工具：web_search（与 converter/codewhisperer.go 保持一致）
 		if tool.Name == "web_search" || tool.Name == "websearch" {
-			utils.Log("过滤不支持的工具（token计算）",
-				utils.LogString("tool_name", tool.Name))
 			continue
 		}
 		filtered = append(filtered, tool)
@@ -94,27 +101,25 @@ func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		if _, ok := err.(*types.ModelNotFoundErrorType); ok {
 			return nil, err
 		}
-		handleRequestBuildError(c, err)
+		if !isStream {
+			handleRequestBuildError(c, err)
+		}
 		return nil, err
 	}
 
 	resp, err := utils.DoRequest(req)
 	if err != nil {
-		handleRequestSendError(c, err)
+		if !isStream {
+			handleRequestSendError(c, err)
+		}
 		return nil, err
 	}
 
-	if handleCodeWhispererError(c, resp) {
+	upstreamErr := handleCodeWhispererError(c, resp, isStream)
+	if upstreamErr != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("CodeWhisperer API error")
+		return nil, upstreamErr
 	}
-
-	// 上游响应成功，记录方向与会话
-	utils.Log("上游响应成功",
-		addReqFields(c,
-			utils.LogString("direction", "upstream_response"),
-			utils.LogInt("status_code", resp.StatusCode),
-		)...)
 
 	return resp, nil
 }
@@ -140,24 +145,9 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 		return nil, fmt.Errorf("序列化请求失败: %v", err)
 	}
 
-	// 记录发送给CodeWhisperer的请求
-	var toolNamesPreview string
-	if len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools) > 0 {
-		names := make([]string, 0, len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools))
-		for _, t := range cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools {
-			if t.ToolSpecification.Name != "" {
-				names = append(names, t.ToolSpecification.Name)
-			}
-		}
-		toolNamesPreview = strings.Join(names, ",")
-	}
-
-	utils.Log("发送给CodeWhisperer的请求",
-		utils.LogString("direction", "upstream_request"),
-		utils.LogInt("request_size", len(cwReqBody)),
-		utils.LogString("request_body", string(cwReqBody)),
-		utils.LogInt("tools_count", len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)),
-		utils.LogString("tools_names", toolNamesPreview))
+	utils.Info("上游请求: size=%d, tools=%d",
+		len(cwReqBody),
+		len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools))
 
 	req, err := http.NewRequest("POST", config.CodeWhispererURL, bytes.NewReader(cwReqBody))
 	if err != nil {
@@ -165,70 +155,71 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	}
 
 	req.Header.Set("Authorization", "Bearer "+tokenInfo.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-
-	// 添加上游请求必需的header
-	req.Header.Set("x-amzn-kiro-agent-mode", "spec")
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.18 KiroIDE-0.2.13-66c23a8c5d15afabec89ef9954ef52a119f10d369df04d548fc6c1eac694b0d1")
-	req.Header.Set("user-agent", "aws-sdk-js/1.0.18 ua/2.1 os/darwin#25.0.0 lang/js md/nodejs#20.16.0 api/codewhispererstreaming#1.0.18 m/E KiroIDE-0.2.13-66c23a8c5d15afabec89ef9954ef52a119f10d369df04d548fc6c1eac694b0d1")
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
+	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0")
+	req.Header.Set("X-Amz-User-Agent", "aws-sdk-rust/1.3.9 ua/2.1 api/codewhispererstreaming/1.0.0 os/macos lang/rust/1.87.0 m/E")
 
 	return req, nil
 }
 
-// handleCodeWhispererError 处理CodeWhisperer API错误响应 (重构后符合SOLID原则)
-func handleCodeWhispererError(c *gin.Context, resp *http.Response) bool {
+// handleCodeWhispererError 处理CodeWhisperer API错误响应
+// 对于流式请求，只返回错误信息；对于非流式请求，发送JSON响应
+func handleCodeWhispererError(c *gin.Context, resp *http.Response, isStream bool) *UpstreamError {
 	if resp.StatusCode == http.StatusOK {
-		return false
+		return nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		utils.Log("读取错误响应失败",
-			addReqFields(c,
-				utils.LogString("direction", "upstream_response"),
-				utils.LogErr(err),
-			)...)
-		respondError(c, http.StatusInternalServerError, "%s", "读取响应失败")
-		return true
+		utils.Error("读取错误响应失败: %v", err)
+		if !isStream {
+			respondError(c, http.StatusInternalServerError, "%s", "读取响应失败")
+		}
+		return &UpstreamError{StatusCode: resp.StatusCode, Message: "读取响应失败"}
 	}
 
-	utils.Log("上游响应错误",
-		addReqFields(c,
-			utils.LogString("direction", "upstream_response"),
-			utils.LogInt("status_code", resp.StatusCode),
-			utils.LogInt("response_len", len(body)),
-			utils.LogString("response_body", string(body)),
-		)...)
+	utils.Error("上游错误: status=%d", resp.StatusCode)
 
-	// 特殊处理：403错误表示token失效 (保持向后兼容)
+	// 尝试解析上游错误信息
+	errorMsg := string(body)
+	var errorResp map[string]any
+	if err := utils.SafeUnmarshal(body, &errorResp); err == nil {
+		if msg, ok := errorResp["message"].(string); ok && msg != "" {
+			errorMsg = msg
+		}
+	}
+
+	// 特殊处理：403错误表示账号被封禁
 	if resp.StatusCode == http.StatusForbidden {
-		utils.Log("收到403错误，token可能已失效")
-		respondErrorWithCode(c, http.StatusUnauthorized, "unauthorized", "%s", "Token已失效，请重试")
-		return true
+		// 清除失效的 token 缓存
+		if refreshToken, exists := c.Get("refreshToken"); exists {
+			if token, ok := refreshToken.(string); ok {
+				InvalidateToken(token)
+			}
+		}
+
+		if !isStream {
+			respondErrorWithCode(c, http.StatusForbidden, "forbidden", "%s", errorMsg)
+		}
+		return &UpstreamError{StatusCode: resp.StatusCode, Message: errorMsg}
 	}
 
-	// *** 新增：使用错误映射器处理错误，符合Claude API规范 ***
+	// 使用错误映射器处理错误
 	errorMapper := NewErrorMapper()
 	claudeError := errorMapper.MapCodeWhispererError(resp.StatusCode, body)
 
-	// 根据映射结果发送符合Claude规范的响应
-	if claudeError.StopReason == "max_tokens" {
-		// CONTENT_LENGTH_EXCEEDS_THRESHOLD -> max_tokens stop_reason
-		utils.Log("内容长度超限，映射为max_tokens stop_reason",
-			addReqFields(c,
-				utils.LogString("upstream_reason", "CONTENT_LENGTH_EXCEEDS_THRESHOLD"),
-				utils.LogString("claude_stop_reason", "max_tokens"),
-			)...)
-		errorMapper.SendClaudeError(c, claudeError)
-	} else {
-		// 其他错误使用传统方式处理 (向后兼容)
-		respondErrorWithCode(c, http.StatusInternalServerError, "cw_error", "CodeWhisperer Error: %s", string(body))
+	if !isStream {
+		// 非流式请求：发送JSON响应
+		if claudeError.StopReason == "max_tokens" {
+			errorMapper.SendClaudeError(c, claudeError)
+		} else {
+			respondErrorWithCode(c, http.StatusInternalServerError, "cw_error", "%s", errorMsg)
+		}
 	}
 
-	return true
+	return &UpstreamError{StatusCode: resp.StatusCode, Message: errorMsg}
 }
 
 // StreamEventSender 统一的流事件发送接口
@@ -275,11 +266,7 @@ func (s *AnthropicStreamSender) SendEvent(c *gin.Context, data any) error {
 		return err
 	}
 
-	utils.Log("发送SSE事件",
-		addReqFields(c,
-			utils.LogString("event", eventType),
-			utils.LogString("payload_preview", string(json)),
-		)...)
+	// utils.Log("发送SSE事件", utils.LogString("event", eventType))
 
 	fmt.Fprintf(c.Writer, "event: %s\n", eventType)
 	fmt.Fprintf(c.Writer, "data: %s\n\n", string(json))
@@ -478,7 +465,7 @@ func (rc *RequestContext) GetTokenAndBody() (types.TokenInfo, []byte, error) {
 	// 获取token
 	tokenInfo, err := rc.AuthService.GetToken()
 	if err != nil {
-		utils.Log("获取token失败", utils.LogErr(err))
+		utils.Error("获取token失败: %v", err)
 		respondError(rc.GinContext, http.StatusInternalServerError, "获取token失败: %v", err)
 		return types.TokenInfo{}, nil, err
 	}
@@ -486,20 +473,10 @@ func (rc *RequestContext) GetTokenAndBody() (types.TokenInfo, []byte, error) {
 	// 读取请求体
 	body, err := rc.GinContext.GetRawData()
 	if err != nil {
-		utils.Log("读取请求体失败", utils.LogErr(err))
+		utils.Error("读取请求体失败: %v", err)
 		respondError(rc.GinContext, http.StatusBadRequest, "读取请求体失败: %v", err)
 		return types.TokenInfo{}, nil, err
 	}
-
-	// 记录请求日志
-	utils.Log(fmt.Sprintf("收到%s请求", rc.RequestType),
-		addReqFields(rc.GinContext,
-			utils.LogString("direction", "client_request"),
-			utils.LogString("body", string(body)),
-			utils.LogInt("body_size", len(body)),
-			utils.LogString("remote_addr", rc.GinContext.ClientIP()),
-			utils.LogString("user_agent", rc.GinContext.GetHeader("User-Agent")),
-		)...)
 
 	return tokenInfo, body, nil
 }
@@ -510,7 +487,7 @@ func (rc *RequestContext) GetTokenWithUsageAndBody() (*types.TokenWithUsage, []b
 	// 获取token（包含使用信息）
 	tokenWithUsage, err := rc.AuthService.GetTokenWithUsage()
 	if err != nil {
-		utils.Log("获取token失败", utils.LogErr(err))
+		utils.Error("获取token失败: %v", err)
 		respondError(rc.GinContext, http.StatusInternalServerError, "获取token失败: %v", err)
 		return nil, nil, err
 	}
@@ -518,21 +495,10 @@ func (rc *RequestContext) GetTokenWithUsageAndBody() (*types.TokenWithUsage, []b
 	// 读取请求体
 	body, err := rc.GinContext.GetRawData()
 	if err != nil {
-		utils.Log("读取请求体失败", utils.LogErr(err))
+		utils.Error("读取请求体失败: %v", err)
 		respondError(rc.GinContext, http.StatusBadRequest, "读取请求体失败: %v", err)
 		return nil, nil, err
 	}
-
-	// 记录请求日志
-	utils.Log(fmt.Sprintf("收到%s请求", rc.RequestType),
-		addReqFields(rc.GinContext,
-			utils.LogString("direction", "client_request"),
-			utils.LogString("body", string(body)),
-			utils.LogInt("body_size", len(body)),
-			utils.LogString("remote_addr", rc.GinContext.ClientIP()),
-			utils.LogString("user_agent", rc.GinContext.GetHeader("User-Agent")),
-			utils.LogAny("available_count", tokenWithUsage.AvailableCount),
-		)...)
 
 	return tokenWithUsage, body, nil
 }

@@ -3,6 +3,7 @@ package converter
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"kiro/config"
 
@@ -12,12 +13,105 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// agenticSystemPrompt 用于防止大文件写入超时的系统提示
+const agenticSystemPrompt = `
+# CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
+
+- **MAXIMUM 350 LINES** per single write/edit operation
+- AWS Kiro API has a 2-3 minute timeout for large file write operations
+- If you need to write more than 350 lines, split into multiple operations
+- For new files: Create with first chunk, then append remaining chunks
+- For edits: Make multiple targeted edits instead of one large replacement
+`
+
 // ValidateAssistantResponseEvent 验证助手响应事件
 // ConvertToAssistantResponseEvent 转换任意数据为标准的AssistantResponseEvent
 // NormalizeAssistantResponseEvent 标准化助手响应事件（填充默认值等）
 // normalizeWebLinks 标准化网页链接
 // normalizeReferences 标准化引用
 // CodeWhisperer格式转换器
+
+// getLastUserMessageContent 获取最后一条用户消息的文本内容
+func getLastUserMessageContent(messages []types.AnthropicRequestMessage) string {
+	// 从后向前查找最后一条用户消息
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return extractTextFromContent(messages[i].Content)
+		}
+	}
+	return ""
+}
+
+// extractTextFromContent 从消息内容中提取文本（支持 string 和 []ContentBlock）
+func extractTextFromContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		// 处理 []any 格式（JSON 解析后的格式）
+		for _, item := range v {
+			if block, ok := item.(map[string]any); ok {
+				if blockType, exists := block["type"].(string); exists && blockType == "text" {
+					if text, exists := block["text"].(string); exists {
+						return text
+					}
+				}
+			}
+		}
+	case []types.ContentBlock:
+		// 处理 []ContentBlock 格式
+		for _, block := range v {
+			if block.Type == "text" && block.Text != nil {
+				return *block.Text
+			}
+		}
+	}
+	return ""
+}
+
+// isAgenticMode 检查是否应启用 Agentic 模式（最后一条用户消息以 "-agent" 开头）
+func isAgenticMode(messages []types.AnthropicRequestMessage) bool {
+	content := getLastUserMessageContent(messages)
+	return strings.HasPrefix(strings.TrimSpace(content), "-agent")
+}
+
+// buildEnhancedSystemPrompt 构建增强的系统提示（包含时间戳、Thinking、Agentic 注入）
+func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
+	var systemPrompt strings.Builder
+
+	// 1. 注入时间戳上下文（始终注入）
+	timestamp := time.Now().Format("2006-01-02 15:04:05 MST")
+	systemPrompt.WriteString(fmt.Sprintf("[Context: Current time is %s]\n\n", timestamp))
+
+	// 2. 添加原有的系统提示
+	if len(anthropicReq.System) > 0 {
+		for _, sysMsg := range anthropicReq.System {
+			content, err := utils.GetMessageContent(sysMsg)
+			if err == nil && content != "" {
+				systemPrompt.WriteString(content)
+				systemPrompt.WriteString("\n")
+			}
+		}
+	}
+
+	// 3. 注入 Agentic 模式提示（条件：最后一条用户消息以 "-agent" 开头）
+	if isAgenticMode(anthropicReq.Messages) {
+		systemPrompt.WriteString("\n")
+		systemPrompt.WriteString(agenticSystemPrompt)
+	}
+
+	// 4. 注入 Thinking 模式提示（条件：thinking.type == "enabled"）
+	if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "enabled" {
+		budgetTokens := anthropicReq.Thinking.BudgetTokens
+		if budgetTokens <= 0 {
+			budgetTokens = 16000 // 默认值
+		}
+		systemPrompt.WriteString("\n")
+		systemPrompt.WriteString(fmt.Sprintf("<thinking_mode>interleaved</thinking_mode><max_thinking_length>%d</max_thinking_length>", budgetTokens))
+	}
+
+	return strings.TrimSpace(systemPrompt.String())
+}
 
 // determineChatTriggerType 智能确定聊天触发类型 (SOLID-SRP: 单一责任)
 func determineChatTriggerType(anthropicReq types.AnthropicRequest) string {
@@ -62,9 +156,6 @@ func validateCodeWhispererRequest(cwReq *types.CodeWhispererRequest) error {
 
 	// 如果有工具结果，允许内容为空（这是工具执行后的反馈请求）
 	if hasToolResults {
-		utils.Log("检测到工具结果，允许内容为空",
-			utils.LogString("conversation_id", cwReq.ConversationState.ConversationId),
-			utils.LogInt("tool_results_count", len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.ToolResults)))
 		return nil
 	}
 
@@ -72,9 +163,6 @@ func validateCodeWhispererRequest(cwReq *types.CodeWhispererRequest) error {
 	if trimmedContent == "" && !hasImages && hasTools {
 		placeholder := "执行工具任务"
 		cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = placeholder
-		utils.Log("注入占位内容以触发工具调用",
-			utils.LogString("conversation_id", cwReq.ConversationState.ConversationId),
-			utils.LogInt("tools_count", len(cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools)))
 		trimmedContent = placeholder
 	}
 
@@ -204,39 +292,16 @@ func extractToolResultsFromMessage(content any) []types.ToolResult {
 
 // BuildCodeWhispererRequest 构建 CodeWhisperer 请求
 func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Context) (types.CodeWhispererRequest, error) {
-	// utils.Log("构建CodeWhisperer请求", utils.LogString("profile_arn", profileArn))
-
 	cwReq := types.CodeWhispererRequest{}
-
-	// 设置代理相关字段 (基于参考文档的标准配置)
-	// 使用稳定的代理延续ID生成器，保持会话连续性 (KISS + DRY原则)
-	cwReq.ConversationState.AgentContinuationId = utils.GenerateStableAgentContinuationID(ctx)
-	cwReq.ConversationState.AgentTaskType = "vibe" // 固定设置为"vibe"，符合参考文档
 
 	// 智能设置ChatTriggerType (KISS: 简化逻辑但保持准确性)
 	cwReq.ConversationState.ChatTriggerType = determineChatTriggerType(anthropicReq)
 
-	// 使用稳定的会话ID生成器，基于客户端信息生成持久化的conversationId
+	// 使用 UUID 作为 conversationId
 	if ctx != nil {
 		cwReq.ConversationState.ConversationId = utils.GenerateStableConversationID(ctx)
-
-		// 调试日志：记录会话ID生成信息
-		// clientInfo := utils.ExtractClientInfo(ctx)
-		// utils.Log("生成稳定会话ID",
-		// 	utils.LogString("conversation_id", cwReq.ConversationState.ConversationId),
-		// 	utils.LogString("agent_continuation_id", cwReq.ConversationState.AgentContinuationId),
-		// 	utils.LogString("agent_task_type", cwReq.ConversationState.AgentTaskType),
-		// 	utils.LogString("client_ip", clientInfo["client_ip"]),
-		// 	utils.LogString("user_agent", clientInfo["user_agent"]),
-		// 	utils.LogString("custom_conv_id", clientInfo["custom_conv_id"]),
-		// utils.LogString("custom_agent_cont_id", clientInfo["custom_agent_cont_id"]))
 	} else {
-		// 向后兼容：如果没有提供context，仍使用UUID
 		cwReq.ConversationState.ConversationId = utils.GenerateUUID()
-		utils.Log("使用随机UUID作为会话ID（向后兼容）",
-			utils.LogString("conversation_id", cwReq.ConversationState.ConversationId),
-			utils.LogString("agent_continuation_id", cwReq.ConversationState.AgentContinuationId),
-			utils.LogString("agent_task_type", cwReq.ConversationState.AgentTaskType))
 	}
 
 	// 处理最后一条消息，包括图片
@@ -256,7 +321,19 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		return cwReq, fmt.Errorf("处理消息内容失败: %v", err)
 	}
 
-	cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = textContent
+	// 构建增强的系统提示（包含时间戳、Thinking、Agentic 注入）
+	enhancedSystemPrompt := buildEnhancedSystemPrompt(anthropicReq)
+
+	// 将系统提示包装到 content 中（CLIProxyAPIPlus 格式）
+	var finalContent strings.Builder
+	if enhancedSystemPrompt != "" {
+		finalContent.WriteString("--- SYSTEM PROMPT ---\n")
+		finalContent.WriteString(enhancedSystemPrompt)
+		finalContent.WriteString("\n--- END SYSTEM PROMPT ---\n\n")
+	}
+	finalContent.WriteString(textContent)
+
+	cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = finalContent.String()
 	// 确保Images字段始终是数组，即使为空
 	if len(images) > 0 {
 		cwReq.ConversationState.CurrentMessage.UserInputMessage.Images = images
@@ -269,26 +346,20 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		toolResults := extractToolResultsFromMessage(lastMessage.Content)
 		if len(toolResults) > 0 {
 			cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.ToolResults = toolResults
-
-			utils.Log("已添加工具结果到请求",
-				utils.LogInt("tool_results_count", len(toolResults)),
-				utils.LogString("conversation_id", cwReq.ConversationState.ConversationId))
-
-			// 对于包含 tool_result 的请求，content 应该为空字符串（符合 req2.json 的格式）
-			cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = ""
-			utils.Log("工具结果请求，设置 content 为空字符串")
+			// 对于包含 tool_result 的请求，保留系统提示但移除用户文本
+			if enhancedSystemPrompt != "" {
+				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = "--- SYSTEM PROMPT ---\n" + enhancedSystemPrompt + "\n--- END SYSTEM PROMPT ---\n"
+			} else {
+				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = ""
+			}
 		}
 	}
 
 	// 检查模型映射是否存在，如果不存在则返回错误
 	modelId := config.ModelMap[anthropicReq.Model]
 	if modelId == "" {
-		utils.Log("模型映射不存在",
-			utils.LogString("requested_model", anthropicReq.Model),
-			utils.LogString("request_id", cwReq.ConversationState.AgentContinuationId))
-
-		// 返回模型未找到错误，使用已生成的AgentContinuationId
-		return cwReq, types.NewModelNotFoundErrorType(anthropicReq.Model, cwReq.ConversationState.AgentContinuationId)
+		// 返回模型未找到错误
+		return cwReq, types.NewModelNotFoundErrorType(anthropicReq.Model, cwReq.ConversationState.ConversationId)
 	}
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.ModelId = modelId
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "AI_EDITOR" // v0.4兼容性：固定使用AI_EDITOR
@@ -300,10 +371,9 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		// 	utils.LogString("conversation_id", cwReq.ConversationState.ConversationId))
 
 		var tools []types.CodeWhispererTool
-		for i, tool := range anthropicReq.Tools {
+		for _, tool := range anthropicReq.Tools {
 			// 验证工具定义的完整性 (SOLID-SRP: 单一责任验证)
 			if tool.Name == "" {
-				utils.Log("跳过无名称的工具", utils.LogInt("tool_index", i))
 				continue
 			}
 
@@ -325,10 +395,6 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 			// 限制 description 长度为 10000 字符
 			if len(tool.Description) > config.MaxToolDescriptionLength {
 				cwTool.ToolSpecification.Description = tool.Description[:config.MaxToolDescriptionLength]
-				utils.Log("工具描述超长已截断",
-					utils.LogString("tool_name", tool.Name),
-					utils.LogInt("original_length", len(tool.Description)),
-					utils.LogInt("max_length", config.MaxToolDescriptionLength))
 			} else {
 				cwTool.ToolSpecification.Description = tool.Description
 			}
@@ -509,12 +575,20 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 			autoAssistantMsg.AssistantResponseMessage.Content = "OK"
 			autoAssistantMsg.AssistantResponseMessage.ToolUses = nil
 			history = append(history, autoAssistantMsg)
-
-			utils.Log("历史消息末尾存在孤立的user消息，已自动配对assistant",
-				utils.LogInt("orphan_messages", len(userMessagesBuffer)))
 		}
 
 		cwReq.ConversationState.History = history
+	}
+
+	// 设置 InferenceConfig（参考 CLIProxyAPIPlus 格式）
+	if anthropicReq.MaxTokens > 0 {
+		cwReq.InferenceConfig = &types.InferenceConfig{
+			MaxTokens: anthropicReq.MaxTokens,
+		}
+		// 如果指定了温度参数，也设置它
+		if anthropicReq.Temperature != nil {
+			cwReq.InferenceConfig.Temperature = *anthropicReq.Temperature
+		}
 	}
 
 	// 最终验证请求完整性 (KISS: 简化验证逻辑)

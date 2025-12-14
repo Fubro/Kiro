@@ -120,23 +120,8 @@ func (rp *RobustEventStreamParser) parseSingleMessageWithValidation(data []byte)
 
 	payloadData := data[payloadStart:payloadEnd]
 
-	// 添加详细的payload调试信息
-	utils.Log("Payload调试信息",
-		// utils.LogInt("total_length", int(totalLength)),
-		// utils.LogInt("header_length", int(headerLength)),
-		// utils.LogString("prelude_crc", fmt.Sprintf("%08x", preludeCRC)),
-		// utils.LogInt("payload_start", int(payloadStart)),
-		// utils.LogInt("payload_end", payloadEnd),
-		// utils.LogInt("payload_len", len(payloadData)),
-		// utils.LogString("payload_hex", func() string {
-		// 	if len(payloadData) > 20 {
-		// 		return fmt.Sprintf("%x", payloadData[:20]) + "..."
-		// 	}
-		// 	return fmt.Sprintf("%x", payloadData)
-		// }()),
-		utils.LogString("payload_raw", func() string {
-			return string(payloadData)
-		}()))
+	// 详细payload调试信息（已禁用）
+	// utils.Log("Payload调试信息", utils.LogString("payload_raw", string(payloadData)))
 
 	// CRC 校验（消息 CRC 覆盖整个消息除了最后4字节）
 	// expectedCRC := binary.BigEndian.Uint32(data[payloadEnd:totalLength])
