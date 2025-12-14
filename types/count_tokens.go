@@ -5,7 +5,7 @@ package types
 type CountTokensRequest struct {
 	Model    string                    `json:"model" binding:"required"`
 	Messages []AnthropicRequestMessage `json:"messages" binding:"required"`
-	System   []AnthropicSystemMessage  `json:"system,omitempty"`
+	System   SystemMessages            `json:"system,omitempty"`
 	Tools    []AnthropicTool           `json:"tools,omitempty"`
 }
 

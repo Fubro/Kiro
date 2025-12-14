@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // AnthropicTool 表示 Anthropic API 的工具结构
 type AnthropicTool struct {
 	Name        string         `json:"name"`
@@ -18,7 +20,7 @@ type AnthropicRequest struct {
 	Model       string                    `json:"model"`
 	MaxTokens   int                       `json:"max_tokens"`
 	Messages    []AnthropicRequestMessage `json:"messages"`
-	System      []AnthropicSystemMessage  `json:"system,omitempty"`
+	System      SystemMessages            `json:"system,omitempty"`
 	Tools       []AnthropicTool           `json:"tools,omitempty"`
 	ToolChoice  any                       `json:"tool_choice,omitempty"` // 可以是string或ToolChoice对象
 	Stream      bool                      `json:"stream"`
@@ -56,9 +58,31 @@ type AnthropicRequestMessage struct {
 	Content any    `json:"content"` // 可以是 string 或 []ContentBlock
 }
 
+// AnthropicSystemMessage 表示系统消息结构
 type AnthropicSystemMessage struct {
 	Type string `json:"type"`
-	Text string `json:"text"` // 可以是 string 或 []ContentBlock
+	Text string `json:"text"`
+}
+
+// SystemMessages 封装系统消息，支持字符串和数组两种格式
+type SystemMessages []AnthropicSystemMessage
+
+// UnmarshalJSON 实现自定义 JSON 解析，兼容字符串和数组格式
+func (s *SystemMessages) UnmarshalJSON(data []byte) error {
+	// 尝试解析为字符串
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*s = []AnthropicSystemMessage{{Type: "text", Text: str}}
+		return nil
+	}
+
+	// 尝试解析为数组
+	var messages []AnthropicSystemMessage
+	if err := json.Unmarshal(data, &messages); err != nil {
+		return err
+	}
+	*s = messages
+	return nil
 }
 
 // ContentBlock 表示消息内容块的结构
