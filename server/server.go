@@ -31,6 +31,12 @@ func StartServer(port string) {
 	r.Use(gin.Recovery())
 	r.Use(RequestIDMiddleware())
 	r.Use(corsMiddleware())
+
+	// 根路径重定向（无需认证）
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "https://www.bilibili.com/video/BV1pM4y1L76p")
+	})
+
 	r.Use(AuthMiddleware()) // 应用到所有 API 端点
 
 	// GET /v1/models 端点

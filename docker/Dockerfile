@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用（完全静态编译）
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -a -ldflags '-extldflags "-static"' -o kiro main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -a -ldflags '-extldflags "-static"' -o kiro ./cmd/server
 
 # 运行阶段 - 使用 scratch 最小镜像
 FROM scratch

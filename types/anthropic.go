@@ -72,6 +72,11 @@ func (s *SystemMessages) UnmarshalJSON(data []byte) error {
 	// 尝试解析为字符串
 	var str string
 	if err := json.Unmarshal(data, &str); err == nil {
+		// 空字符串视为无系统提示
+		if str == "" {
+			*s = []AnthropicSystemMessage{}
+			return nil
+		}
 		*s = []AnthropicSystemMessage{{Type: "text", Text: str}}
 		return nil
 	}

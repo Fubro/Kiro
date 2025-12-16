@@ -47,7 +47,7 @@ x-api-key: CLIENT_ID:CLIENT_SECRET:REFRESH_TOKEN
 cp .env.example .env
 
 # 运行
-go run main.go
+go run ./cmd/server
 ```
 
 ### Docker

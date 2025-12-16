@@ -229,6 +229,11 @@ func extractToolResultsFromMessage(content any) []types.ToolResult {
 							toolResult.Content = contentArray
 						}
 
+						// 确保 Content 不为空（上游 API 要求）
+						if len(toolResult.Content) == 0 {
+							toolResult.Content = []map[string]any{{"text": ""}}
+						}
+
 						// 提取 status (默认为 success)
 						toolResult.Status = "success"
 						if isError, ok := block["is_error"].(bool); ok && isError {
@@ -293,6 +298,11 @@ func extractToolResultsFromMessage(content any) []types.ToolResult {
 					}
 
 					toolResult.Content = contentArray
+				}
+
+				// 确保 Content 不为空（上游 API 要求）
+				if len(toolResult.Content) == 0 {
+					toolResult.Content = []map[string]any{{"text": ""}}
 				}
 
 				// 设置 status
@@ -483,7 +493,7 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 				continue
 			}
 			if msg.Role == "assistant" {
-				// 遇到assistant，只有当有对应的user消息时才处理（忽略孤立assistant）
+				// 遇到assistant，只有当有对应的user消息时才处理
 				if len(userMessagesBuffer) > 0 {
 					// 合并所有累积的user消息
 					mergedUserMsg := types.HistoryUserMessage{}
@@ -547,8 +557,33 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 					}
 
 					history = append(history, assistantMsg)
+				} else if len(history) > 0 {
+					// 孤立的assistant消息：合并到上一个assistant消息中
+					lastHistoryIdx := len(history) - 1
+					if lastAssistant, ok := history[lastHistoryIdx].(types.HistoryAssistantMessage); ok {
+						// 合并内容
+						additionalContent, err := utils.GetMessageContent(msg.Content)
+						if err == nil && additionalContent != "" {
+							if lastAssistant.AssistantResponseMessage.Content != "" {
+								lastAssistant.AssistantResponseMessage.Content += "\n" + additionalContent
+							} else {
+								lastAssistant.AssistantResponseMessage.Content = additionalContent
+							}
+						}
+
+						// 合并工具调用
+						additionalToolUses := extractToolUsesFromMessage(msg.Content)
+						if len(additionalToolUses) > 0 {
+							lastAssistant.AssistantResponseMessage.ToolUses = append(
+								lastAssistant.AssistantResponseMessage.ToolUses,
+								additionalToolUses...,
+							)
+						}
+
+						history[lastHistoryIdx] = lastAssistant
+					}
 				}
-				// 如果buffer为空，孤立的assistant消息被忽略（不添加到history）
+				// 如果history为空且buffer为空，完全孤立的assistant消息被忽略
 			}
 		}
 
