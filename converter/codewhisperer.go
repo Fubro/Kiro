@@ -204,10 +204,16 @@ func extractToolResultsFromMessage(content any) []types.ToolResult {
 									{"text": c},
 								}
 							case []any:
-								// 如果已经是数组，保持原样
+								// 如果已经是数组，只保留 text 字段，移除 type 等其他字段
 								for _, item := range c {
 									if m, ok := item.(map[string]any); ok {
-										contentArray = append(contentArray, m)
+										cleanedItem := make(map[string]any)
+										if text, hasText := m["text"]; hasText {
+											cleanedItem["text"] = text
+										}
+										if len(cleanedItem) > 0 {
+											contentArray = append(contentArray, cleanedItem)
+										}
 									}
 								}
 							case map[string]any:
@@ -259,13 +265,27 @@ func extractToolResultsFromMessage(content any) []types.ToolResult {
 							{"text": c},
 						}
 					case []any:
+						// 只保留 text 字段，移除 type 等其他字段
 						for _, item := range c {
 							if m, ok := item.(map[string]any); ok {
-								contentArray = append(contentArray, m)
+								cleanedItem := make(map[string]any)
+								if text, hasText := m["text"]; hasText {
+									cleanedItem["text"] = text
+								}
+								if len(cleanedItem) > 0 {
+									contentArray = append(contentArray, cleanedItem)
+								}
 							}
 						}
 					case map[string]any:
-						contentArray = []map[string]any{c}
+						// 只保留 text 字段
+						cleanedItem := make(map[string]any)
+						if text, hasText := c["text"]; hasText {
+							cleanedItem["text"] = text
+						}
+						if len(cleanedItem) > 0 {
+							contentArray = []map[string]any{cleanedItem}
+						}
 					default:
 						contentArray = []map[string]any{
 							{"text": fmt.Sprintf("%v", c)},
