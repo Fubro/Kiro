@@ -57,7 +57,7 @@ go run ./cmd/server
 docker compose -f docker/docker-compose.yml up -d
 
 # 或直接运行镜像
-docker run -d -p 1188:1188 ghcr.io/mamocode/kiro:latest
+docker run -d -p 1188:1188 ghcr.io/mamoworks/kiro:latest
 ```
 
 ## 环境变量

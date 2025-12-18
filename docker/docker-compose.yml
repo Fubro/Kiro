@@ -1,6 +1,6 @@
 services:
   kiro:
-    image: ghcr.io/mamocode/kiro:latest
+    image: ghcr.io/mamoworks/kiro:latest
     container_name: kiro
     restart: always
     ports:
