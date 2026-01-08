@@ -17,10 +17,30 @@
 
 ---
 
+## 🌿 分支说明
+
+本项目提供两个分支，满足不同使用场景：
+
+### 🔵 主分支 (main)
+- **默认启用思维链** - 所有模型请求自动启用 Thinking Mode
+- 适合需要深度推理的场景
+- 可通过 `thinking.type = "disabled"` 显式禁用
+
+### 🟢 SillyTavern 分支 (sillytavern)
+- **按需启用思维链** - 仅当模型名包含 `-thinking` 后缀时启用
+- 支持模型名：`claude-sonnet-4-5-thinking`、`claude-opus-4-5-thinking` 等
+- 完全兼容 SillyTavern 和其他客户端
+
+**选择建议**：
+- 使用 SillyTavern 等客户端 → 选择 `sillytavern` 分支
+- 需要默认思维链功能 → 选择 `main` 分支
+
+---
+
 ## ✨ 核心特性
 
 - 🔄 **无缝转换** - 完整兼容 Anthropic Claude API 格式
-- 🧠 **思维链支持** - 支持 Thinking Mode（思维链）和 Agentic 模式
+- 🧠 **默认思维链** - 主分支所有请求默认启用 Thinking Mode，深度推理
 - 🎯 **多模型支持** - Claude Opus 4.5、Sonnet 4.5、Haiku 4.5
 - ⚡ **流式响应** - 支持 Server-Sent Events (SSE) 流式输出
 - 🛠️ **工具调用** - 完整的 Function Calling / Tool Use 支持
@@ -169,6 +189,24 @@ curl -X POST http://localhost:1188/v1/messages \
 
 ### 思维链模式（Thinking Mode）
 
+**主分支默认启用思维链**，无需额外配置：
+
+```bash
+# 默认行为：自动启用思维链（budget_tokens=16000）
+curl -X POST http://localhost:1188/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_REFRESH_TOKEN" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {"role": "user", "content": "解释量子计算的工作原理"}
+    ]
+  }'
+```
+
+**自定义思维链预算**：
+
 ```bash
 curl -X POST http://localhost:1188/v1/messages \
   -H "Content-Type: application/json" \
@@ -177,11 +215,28 @@ curl -X POST http://localhost:1188/v1/messages \
     "model": "claude-sonnet-4-5",
     "max_tokens": 4096,
     "thinking": {
-      "type": "enabled",
-      "budget_tokens": 16000
+      "budget_tokens": 32000
     },
     "messages": [
-      {"role": "user", "content": "解释量子计算的工作原理"}
+      {"role": "user", "content": "解决这个复杂数学问题"}
+    ]
+  }'
+```
+
+**禁用思维链**（如需要）：
+
+```bash
+curl -X POST http://localhost:1188/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_REFRESH_TOKEN" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "thinking": {
+      "type": "disabled"
+    },
+    "messages": [
+      {"role": "user", "content": "简单问候"}
     ]
   }'
 ```
@@ -314,6 +369,36 @@ Kiro/
 ---
 
 ## 🔧 高级特性
+
+### 默认思维链模式（主分支）
+
+主分支所有请求默认启用思维链，提供更深入的推理能力：
+
+- **默认配置**: `budget_tokens=16000`
+- **自定义**: 通过 `thinking.budget_tokens` 参数调整
+- **禁用**: 设置 `thinking.type = "disabled"`
+
+```json
+// 默认启用，无需配置
+{
+  "model": "claude-sonnet-4-5",
+  "messages": [...]
+}
+
+// 自定义预算
+{
+  "model": "claude-sonnet-4-5",
+  "thinking": {"budget_tokens": 32000},
+  "messages": [...]
+}
+
+// 显式禁用
+{
+  "model": "claude-sonnet-4-5",
+  "thinking": {"type": "disabled"},
+  "messages": [...]
+}
+```
 
 ### Agentic 模式
 
