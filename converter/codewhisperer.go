@@ -351,15 +351,15 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		return cwReq, fmt.Errorf("处理消息内容失败: %v", err)
 	}
 
-	// 构建增强的系统提示（包含时间戳、Thinking、Agentic 注入）
+	// 构建增强的系统提示（包含思维链，Thinking, Agentic 注入）
 	enhancedSystemPrompt := buildEnhancedSystemPrompt(anthropicReq)
 
-	// 将系统提示包装到 content 中（CLIProxyAPIPlus 格式）
+	// 将系统提示包装到 content 中 (CLIProxyAPIPlus 格式)
 	var finalContent strings.Builder
 	if enhancedSystemPrompt != "" {
-		finalContent.WriteString("--- SYSTEM PROMPT ---\n")
+		finalContent.WriteString("——— SYSTEM PROMPT ———\n")
 		finalContent.WriteString(enhancedSystemPrompt)
-		finalContent.WriteString("\n--- END SYSTEM PROMPT ---\n\n")
+		finalContent.WriteString("\n——— END SYSTEM PROMPT ———\n\n")
 	}
 	finalContent.WriteString(textContent)
 
@@ -378,7 +378,7 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 			cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.ToolResults = toolResults
 			// 对于包含 tool_result 的请求，保留系统提示但移除用户文本
 			if enhancedSystemPrompt != "" {
-				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = "--- SYSTEM PROMPT ---\n" + enhancedSystemPrompt + "\n--- END SYSTEM PROMPT ---\n"
+				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = "——— SYSTEM PROMPT ———\n" + enhancedSystemPrompt + "\n——— END SYSTEM PROMPT ———\n"
 			} else {
 				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = ""
 			}
