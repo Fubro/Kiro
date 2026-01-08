@@ -17,6 +17,27 @@
 
 ---
 
+## 🌿 分支说明
+
+本项目提供两个分支，满足不同使用场景：
+
+### 🔵 主分支 (main)
+- **默认启用思维链** - 所有模型请求自动启用 Thinking Mode
+- 适合需要深度推理的场景
+- 可通过 `thinking.type = "disabled"` 显式禁用
+
+### 🟢 SillyTavern 分支 (sillytavern) ⭐ 当前分支
+- **按需启用思维链** - 仅当模型名包含 `-thinking` 后缀时启用
+- 支持模型名：`claude-sonnet-4-5-thinking`、`claude-opus-4-5-thinking` 等
+- 完全兼容 SillyTavern 和其他客户端
+- 向后兼容：也支持显式 `thinking.type = "enabled"` 参数
+
+**选择建议**：
+- 使用 SillyTavern 等客户端 → 选择 `sillytavern` 分支 ✅
+- 需要默认思维链功能 → 选择 `main` 分支
+
+---
+
 ## ✨ 核心特性
 
 - 🔄 **无缝转换** - 完整兼容 Anthropic Claude API 格式
@@ -34,11 +55,26 @@
 
 ## 🎯 支持的模型
 
+### 标准模型
+
 | 模型名称 | 别名 | 描述 |
 |---------|------|------|
 | `claude-opus-4-5-20251101` | `claude-opus-4-5` | 最强大的模型，适合复杂任务 |
 | `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5` | 平衡性能与速度 |
 | `claude-haiku-4-5-20251001` | `claude-haiku-4-5` | 最快速度，适合简单任务 |
+
+### 思维链模型（SillyTavern 分支专属）
+
+| 模型名称 | 描述 |
+|---------|------|
+| `claude-opus-4-5-thinking` | Opus + 自动启用思维链 |
+| `claude-opus-4-5-20251101-thinking` | Opus (完整版本号) + 思维链 |
+| `claude-sonnet-4-5-thinking` | Sonnet + 自动启用思维链 ⭐ 推荐 |
+| `claude-sonnet-4-5-20250929-thinking` | Sonnet (完整版本号) + 思维链 |
+| `claude-haiku-4-5-thinking` | Haiku + 自动启用思维链 |
+| `claude-haiku-4-5-20251001-thinking` | Haiku (完整版本号) + 思维链 |
+
+> 💡 **提示**: 使用带 `-thinking` 后缀的模型名，会自动启用思维链，无需额外配置。
 
 ---
 
@@ -169,6 +205,24 @@ curl -X POST http://localhost:1188/v1/messages \
 
 ### 思维链模式（Thinking Mode）
 
+**SillyTavern 分支：使用 `-thinking` 后缀自动启用**
+
+```bash
+# 方法1：使用 -thinking 后缀（推荐）
+curl -X POST http://localhost:1188/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_REFRESH_TOKEN" \
+  -d '{
+    "model": "claude-sonnet-4-5-thinking",
+    "max_tokens": 4096,
+    "messages": [
+      {"role": "user", "content": "解释量子计算的工作原理"}
+    ]
+  }'
+```
+
+**方法2：显式启用（向后兼容）**
+
 ```bash
 curl -X POST http://localhost:1188/v1/messages \
   -H "Content-Type: application/json" \
@@ -182,6 +236,24 @@ curl -X POST http://localhost:1188/v1/messages \
     },
     "messages": [
       {"role": "user", "content": "解释量子计算的工作原理"}
+    ]
+  }'
+```
+
+**自定义思维链预算**：
+
+```bash
+curl -X POST http://localhost:1188/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_REFRESH_TOKEN" \
+  -d '{
+    "model": "claude-sonnet-4-5-thinking",
+    "max_tokens": 4096,
+    "thinking": {
+      "budget_tokens": 32000
+    },
+    "messages": [
+      {"role": "user", "content": "解决这个复杂数学问题"}
     ]
   }'
 ```
@@ -314,6 +386,37 @@ Kiro/
 ---
 
 ## 🔧 高级特性
+
+### 模型名后缀自动启用思维链（SillyTavern 分支）
+
+SillyTavern 分支支持通过模型名后缀自动启用思维链：
+
+```json
+// 使用 -thinking 后缀
+{
+  "model": "claude-sonnet-4-5-thinking",  // 自动启用思维链
+  "messages": [...]
+}
+
+// 不带后缀：标准行为
+{
+  "model": "claude-sonnet-4-5",  // 不启用思维链
+  "messages": [...]
+}
+
+// 自定义预算
+{
+  "model": "claude-sonnet-4-5-thinking",
+  "thinking": {"budget_tokens": 32000},  // 自定义预算
+  "messages": [...]
+}
+```
+
+**支持的后缀模型**：
+- `claude-opus-4-5-thinking`
+- `claude-sonnet-4-5-thinking` ⭐
+- `claude-haiku-4-5-thinking`
+- 以及对应的完整版本号变体
 
 ### Agentic 模式
 
