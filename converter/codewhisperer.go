@@ -100,13 +100,13 @@ func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 		systemPrompt.WriteString(agenticSystemPrompt)
 	}
 
-	// 4. 注入 Thinking 模式提示（主分支：默认启用，除非显式禁用）
-	shouldEnableThinking := true
+	// 4. 注入 Thinking 模式提示（默认禁用，除非显式启用）
+	shouldEnableThinking := false
 	budgetTokens := 16000 // 默认值
 
-	// 检查是否显式禁用了 Thinking 模式
-	if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "disabled" {
-		shouldEnableThinking = false
+	// 检查是否显式启用了 Thinking 模式
+	if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "enabled" {
+		shouldEnableThinking = true
 	}
 
 	// 如果显式启用并指定了 budget_tokens，使用指定值

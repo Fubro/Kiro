@@ -155,11 +155,15 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	}
 
 	req.Header.Set("Authorization", "Bearer "+tokenInfo.AccessToken)
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
-	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0")
-	req.Header.Set("X-Amz-User-Agent", "aws-sdk-rust/1.3.9 ua/2.1 api/codewhispererstreaming/1.0.0 os/macos lang/rust/1.87.0 m/E")
+	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.0 KiroIDE-"+config.KiroVersion)
+	req.Header.Set("User-Agent", "aws-sdk-js/1.0.0 ua/2.1 os/windows#10.0 lang/js md/nodejs#20.18.0 api/codewhispererruntime#1.0.0 m/E KiroIDE-"+config.KiroVersion)
+	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("Connection", "close")
 
 	return req, nil
 }
@@ -180,7 +184,7 @@ func handleCodeWhispererError(c *gin.Context, resp *http.Response, isStream bool
 		return &UpstreamError{StatusCode: resp.StatusCode, Message: "读取响应失败"}
 	}
 
-	utils.Error("上游错误: status=%d", resp.StatusCode)
+	utils.Error("上游错误: status=%d, body=%s", resp.StatusCode, string(body))
 
 	// 尝试解析上游错误信息
 	errorMsg := string(body)
