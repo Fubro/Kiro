@@ -3,121 +3,138 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - '.version' # 仅当 .version 文件变化时触发
+      - '.version'
   pull_request:
     branches: [ "main" ]
     paths:
-      - '.version' # PR 中 .version 文件变化时也触发
-  # 也可以手动触发
+      - '.version'
   workflow_dispatch:
-jobs:  
-  build-and-push:  
-    runs-on: ubuntu-latest  
-    permissions:  
-      contents: read  
-      packages: write  
-    steps:  
-      - name: Checkout repository  
-        uses: actions/checkout@v4  
-      - name: Set up Docker Buildx  
-        uses: docker/setup-buildx-action@v3  
-      # 登录到 GitHub 容器仓库  
-      - name: Login to GitHub Container Registry  
-        uses: docker/login-action@v3  
-        with:  
-          registry: ghcr.io  
-          username: ${{ github.repository_owner }}  
-          password: ${{ secrets.GITHUB_TOKEN }}  
-      # 从 .version 文件读取项目名称和版本号
-      - name: Extract project info from .version file
-        id: project-info
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true  # 自动缓存 Go 模块
+
+      - name: Extract project info
+        id: info
         run: |
-          # 解析 .version 文件
-          PROJECT_NAME=$(grep '^project_name=' .version | cut -d'=' -f2)
+          PROJECT_NAME=$(grep '^project_name=' .version | cut -d'=' -f2 | tr '[:upper:]' '[:lower:]')
           VERSION=$(grep '^version=' .version | cut -d'=' -f2)
-
-          # 确保镜像名称为小写
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          PROJECT_NAME_LOWER=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]')
 
-          # 设置输出变量
-          echo "PROJECT_NAME=$PROJECT_NAME_LOWER" >> $GITHUB_OUTPUT
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # 主分支推送，使用 v{version} 格式
             echo "TAG=v${VERSION}" >> $GITHUB_OUTPUT
           else
-            # PR 或其他情况，使用日期和 SHA
             SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
-            DATE=$(date +'%Y%m%d')
-            echo "TAG=v${VERSION}-${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "TAG=v${VERSION}-${SHORT_SHA}" >> $GITHUB_OUTPUT
           fi
 
-          echo "📋 Extracted Information:"
-          echo "  Original project name: $PROJECT_NAME"
-          echo "  Lowercase project name: $PROJECT_NAME_LOWER"
-          echo "  Repository owner: ${{ github.repository_owner }}"
-          echo "  Lowercase repo owner: $REPO_OWNER"
-          echo "  Version: $VERSION"
-          echo "  Generated tag: $(if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then echo "v${VERSION}"; else echo "v${VERSION}-${DATE}-${SHORT_SHA}"; fi)"
+      # Go 原生交叉编译，无需 QEMU
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+            go build -ldflags='-s -w' -o kiro-${{ matrix.arch }} ./cmd/server
 
-      - name: Build and Push Multi-Architecture Images
-        uses: docker/build-push-action@v5
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          context: .
-          file: ./docker/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:latest
-            ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:${{ steps.project-info.outputs.TAG }}
-      
-      # 输出构建摘要信息
-      - name: Build Summary
-        run: |
-          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Event Type** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Branch/Tag** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Build Time** | \`$(date -u)\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Architectures** | \`linux/amd64\`, \`linux/arm64\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Docker Repository** | \`ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Package Name** | \`${{ steps.project-info.outputs.PROJECT_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Package Version** | \`${{ steps.project-info.outputs.VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Action** | ✅ **Built and Pushed** |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Registry** | GitHub Container Registry |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Generated Tags:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo "ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:${{ steps.project-info.outputs.TAG }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🎯 Usage Examples:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "# Pull latest version (recommended)" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Pull specific version" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:${{ steps.project-info.outputs.TAG }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Run container" >> $GITHUB_STEP_SUMMARY
-          echo "docker run -p 8000:8000 --env-file .env ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build success notification
+      - name: Build and push image
         run: |
-          echo "✅ Multi-architecture Docker image build completed successfully!"
-          echo "📊 Build Time: $(date -u)"
-          echo "🏗️ Architectures: linux/amd64, linux/arm64"
-          echo "🐳 Docker Repository: ghcr.io/${{ steps.project-info.outputs.REPO_OWNER }}/${{ steps.project-info.outputs.PROJECT_NAME }}"
-          echo "📦 Package: ${{ steps.project-info.outputs.PROJECT_NAME }}"
-          echo "🔖 Version: ${{ steps.project-info.outputs.VERSION }}"
-          echo "📤 Pushed to GitHub Container Registry"
-          echo "🏷️ Tags pushed:"
-          echo "  - latest (always updated)"
-          echo "  - ${{ steps.project-info.outputs.TAG }} (version tag)"
+          IMAGE=ghcr.io/${{ steps.info.outputs.REPO_OWNER }}/${{ steps.info.outputs.PROJECT_NAME }}
+
+          # 创建简单的 Dockerfile
+          cat > Dockerfile.ci <<EOF
+          FROM scratch
+          COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+          COPY kiro-${{ matrix.arch }} /kiro
+          EXPOSE 8000
+          ENTRYPOINT ["/kiro"]
+          EOF
+
+          docker build -f Dockerfile.ci -t ${IMAGE}:${{ steps.info.outputs.TAG }}-${{ matrix.arch }} .
+          docker push ${IMAGE}:${{ steps.info.outputs.TAG }}-${{ matrix.arch }}
+
+      - name: Save image info
+        run: |
+          echo "${{ steps.info.outputs.TAG }}" > tag.txt
+          echo "${{ steps.info.outputs.PROJECT_NAME }}" > project.txt
+          echo "${{ steps.info.outputs.REPO_OWNER }}" > owner.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: info-${{ matrix.arch }}
+          path: |
+            tag.txt
+            project.txt
+            owner.txt
+
+  # 合并多架构 manifest
+  create-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: info-amd64
+
+      - name: Read info
+        id: info
+        run: |
+          echo "TAG=$(cat tag.txt)" >> $GITHUB_OUTPUT
+          echo "PROJECT_NAME=$(cat project.txt)" >> $GITHUB_OUTPUT
+          echo "REPO_OWNER=$(cat owner.txt)" >> $GITHUB_OUTPUT
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        run: |
+          IMAGE=ghcr.io/${{ steps.info.outputs.REPO_OWNER }}/${{ steps.info.outputs.PROJECT_NAME }}
+          TAG=${{ steps.info.outputs.TAG }}
+
+          # 创建多架构 manifest
+          docker manifest create ${IMAGE}:${TAG} \
+            ${IMAGE}:${TAG}-amd64 \
+            ${IMAGE}:${TAG}-arm64
+
+          docker manifest create ${IMAGE}:latest \
+            ${IMAGE}:${TAG}-amd64 \
+            ${IMAGE}:${TAG}-arm64
+
+          # 推送
+          docker manifest push ${IMAGE}:${TAG}
+          docker manifest push ${IMAGE}:latest
+
+          echo "✅ Multi-arch manifest pushed!"
+          echo "  - ${IMAGE}:${TAG}"
+          echo "  - ${IMAGE}:latest"
