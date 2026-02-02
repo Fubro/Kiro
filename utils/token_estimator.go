@@ -2,8 +2,8 @@ package utils
 
 import (
 	"embed"
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -28,19 +28,36 @@ func getClaudeTokenizer() (*tokenizer.Tokenizer, error) {
 		// 从嵌入的文件系统读取 tokenizer.json
 		data, err := embeddedTokenizer.ReadFile("claude_tokenizer.json")
 		if err != nil {
-			initErr = err
+			initErr = fmt.Errorf("failed to read embedded tokenizer: %w", err)
 			return
 		}
 
-		// 写入临时文件（pretrained.FromFile 需要文件路径）
-		tmpDir := os.TempDir()
-		tmpFile := filepath.Join(tmpDir, "claude_tokenizer.json")
-		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-			initErr = err
+		// 创建临时文件（pretrained.FromFile 需要文件路径）
+		tmpFile, err := os.CreateTemp("", "claude_tokenizer_*.json")
+		if err != nil {
+			initErr = fmt.Errorf("failed to create temp file: %w", err)
+			return
+		}
+		tmpPath := tmpFile.Name()
+
+		// 写入数据并关闭文件
+		if _, err := tmpFile.Write(data); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			initErr = fmt.Errorf("failed to write temp file: %w", err)
+			return
+		}
+		if err := tmpFile.Close(); err != nil {
+			os.Remove(tmpPath)
+			initErr = fmt.Errorf("failed to close temp file: %w", err)
 			return
 		}
 
-		claudeTokenizer, initErr = pretrained.FromFile(tmpFile)
+		// 加载 tokenizer
+		claudeTokenizer, initErr = pretrained.FromFile(tmpPath)
+
+		// 清理临时文件
+		os.Remove(tmpPath)
 	})
 	return claudeTokenizer, initErr
 }
