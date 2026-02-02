@@ -3,7 +3,6 @@ package converter
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"kiro/config"
 
@@ -75,15 +74,11 @@ func isAgenticMode(messages []types.AnthropicRequestMessage) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), "-agent")
 }
 
-// buildEnhancedSystemPrompt 构建增强的系统提示（包含时间戳、Thinking、Agentic 注入）
+// buildEnhancedSystemPrompt 构建增强的系统提示（包含 Thinking、Agentic 注入）
 func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 	var systemPrompt strings.Builder
 
-	// 1. 注入时间戳上下文（始终注入）
-	timestamp := time.Now().Format("2006-01-02 15:04:05 MST")
-	systemPrompt.WriteString(fmt.Sprintf("[Context: Current time is %s]\n\n", timestamp))
-
-	// 2. 添加原有的系统提示
+	// 1. 添加原有的系统提示
 	if len(anthropicReq.System) > 0 {
 		for _, sysMsg := range anthropicReq.System {
 			content, err := utils.GetMessageContent(sysMsg)
@@ -94,13 +89,13 @@ func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 		}
 	}
 
-	// 3. 注入 Agentic 模式提示（条件：最后一条用户消息以 "-agent" 开头）
+	// 2. 注入 Agentic 模式提示（条件：最后一条用户消息以 "-agent" 开头）
 	if isAgenticMode(anthropicReq.Messages) {
 		systemPrompt.WriteString("\n")
 		systemPrompt.WriteString(agenticSystemPrompt)
 	}
 
-	// 4. 注入 Thinking 模式提示（默认禁用，除非显式启用）
+	// 3. 注入 Thinking 模式提示（默认禁用，除非显式启用）
 	shouldEnableThinking := false
 	budgetTokens := 16000 // 默认值
 
@@ -360,15 +355,15 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		return cwReq, fmt.Errorf("处理消息内容失败: %v", err)
 	}
 
-	// 构建增强的系统提示（包含思维链，Thinking, Agentic 注入）
+	// 构建增强的系统提示（包含 Thinking, Agentic 注入）
 	enhancedSystemPrompt := buildEnhancedSystemPrompt(anthropicReq)
 
-	// 将系统提示包装到 content 中 (CLIProxyAPIPlus 格式)
+	// 只在当前消息带系统提示（用 <system_mode> 标签包裹）
 	var finalContent strings.Builder
 	if enhancedSystemPrompt != "" {
-		finalContent.WriteString("——— SYSTEM PROMPT ———\n")
+		finalContent.WriteString("<system_mode>")
 		finalContent.WriteString(enhancedSystemPrompt)
-		finalContent.WriteString("\n——— END SYSTEM PROMPT ———\n\n")
+		finalContent.WriteString("</system_mode>\n\n")
 	}
 	finalContent.WriteString(textContent)
 
@@ -385,9 +380,9 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		toolResults := extractToolResultsFromMessage(lastMessage.Content)
 		if len(toolResults) > 0 {
 			cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.ToolResults = toolResults
-			// 对于包含 tool_result 的请求，保留系统提示但移除用户文本
+			// 对于包含 tool_result 的请求，保留系统提示
 			if enhancedSystemPrompt != "" {
-				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = "——— SYSTEM PROMPT ———\n" + enhancedSystemPrompt + "\n——— END SYSTEM PROMPT ———\n"
+				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = "<system_mode>" + enhancedSystemPrompt + "</system_mode>"
 			} else {
 				cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = ""
 			}
@@ -449,39 +444,11 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools = tools
 	}
 
-	// 构建历史消息
-	if len(anthropicReq.System) > 0 || len(anthropicReq.Messages) > 1 || len(anthropicReq.Tools) > 0 {
+	// 构建历史消息（不带系统提示，系统提示只在当前消息中）
+	if len(anthropicReq.Messages) > 1 || len(anthropicReq.Tools) > 0 {
 		var history []any
 
-		// 构建综合系统提示
-		var systemContentBuilder strings.Builder
-
-		// 添加原有的 system 消息
-		if len(anthropicReq.System) > 0 {
-			for _, sysMsg := range anthropicReq.System {
-				content, err := utils.GetMessageContent(sysMsg)
-				if err == nil {
-					systemContentBuilder.WriteString(content)
-					systemContentBuilder.WriteString("\n")
-				}
-			}
-		}
-
-		// 如果有系统内容，添加到历史记录 (恢复v0.4结构化类型)
-		if systemContentBuilder.Len() > 0 {
-			userMsg := types.HistoryUserMessage{}
-			userMsg.UserInputMessage.Content = strings.TrimSpace(systemContentBuilder.String())
-			userMsg.UserInputMessage.ModelId = modelId
-			userMsg.UserInputMessage.Origin = "AI_EDITOR" // v0.4兼容性：固定使用AI_EDITOR
-			history = append(history, userMsg)
-
-			assistantMsg := types.HistoryAssistantMessage{}
-			assistantMsg.AssistantResponseMessage.Content = "OK"
-			assistantMsg.AssistantResponseMessage.ToolUses = nil
-			history = append(history, assistantMsg)
-		}
-
-		// 然后处理常规消息历史 (修复配对逻辑：合并连续user消息，然后与assistant配对)
+		// 处理常规消息历史 (修复配对逻辑：合并连续user消息，然后与assistant配对)
 		// 关键修复：收集连续的user消息并合并，遇到assistant时配对添加
 		var userMessagesBuffer []types.AnthropicRequestMessage // 累积连续的user消息
 
@@ -528,7 +495,9 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 					}
 
 					// 设置合并后的内容
-					mergedUserMsg.UserInputMessage.Content = strings.Join(contentParts, "\n")
+					mergedContent := strings.Join(contentParts, "\n")
+
+					mergedUserMsg.UserInputMessage.Content = mergedContent
 					if len(allImages) > 0 {
 						mergedUserMsg.UserInputMessage.Images = allImages
 					}

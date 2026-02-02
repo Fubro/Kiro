@@ -145,6 +145,7 @@ func (ssm *SSEStateManager) handleContentBlockStart(c *gin.Context, sender Strea
 	// - index:0 stop (延迟关闭)
 	//
 	// 修复策略：当检测到新工具块启动时，自动关闭所有未关闭的文本块
+	// 注意：thinking 块不需要关闭前面的文本块，因为它们是并行的内容
 	if blockType == "tool_use" {
 		// 遍历所有活跃块，找到未关闭的文本块
 		for blockIndex, block := range ssm.activeBlocks {
@@ -242,8 +243,11 @@ func (ssm *SSEStateManager) handleContentBlockDelta(c *gin.Context, sender Strea
 		blockType := "text" // 默认为文本块
 		if delta, ok := eventData["delta"].(map[string]any); ok {
 			if deltaType, ok := delta["type"].(string); ok {
-				if deltaType == "input_json_delta" {
+				switch deltaType {
+				case "input_json_delta":
 					blockType = "tool_use"
+				case "thinking_delta":
+					blockType = "thinking"
 				}
 			}
 		}
@@ -265,6 +269,10 @@ func (ssm *SSEStateManager) handleContentBlockDelta(c *gin.Context, sender Strea
 			startEvent["content_block"].(map[string]any)["id"] = fmt.Sprintf("tooluse_auto_%d", index)
 			startEvent["content_block"].(map[string]any)["name"] = "auto_detected"
 			startEvent["content_block"].(map[string]any)["input"] = map[string]any{}
+		case "thinking":
+			// 为 thinking 块添加必要字段
+			startEvent["content_block"].(map[string]any)["thinking"] = ""
+			startEvent["content_block"].(map[string]any)["signature"] = "EqYBCkYIARgCIkD8kiro_auto_generated"
 		}
 
 		// 先处理start事件来更新状态
@@ -431,4 +439,16 @@ func (ssm *SSEStateManager) IsMessageEnded() bool {
 // IsMessageDeltaSent 检查message_delta是否已发送
 func (ssm *SSEStateManager) IsMessageDeltaSent() bool {
 	return ssm.messageDeltaSent
+}
+
+// GetNextBlockIndex 获取下一个可用的块索引
+func (ssm *SSEStateManager) GetNextBlockIndex() int {
+	return ssm.nextBlockIndex
+}
+
+// AllocateBlockIndex 分配一个新的块索引
+func (ssm *SSEStateManager) AllocateBlockIndex() int {
+	index := ssm.nextBlockIndex
+	ssm.nextBlockIndex++
+	return index
 }

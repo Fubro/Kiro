@@ -12,6 +12,7 @@ import (
 
 // processMessageContent 处理消息内容，提取文本和图片
 func processMessageContent(content any) (string, []types.CodeWhispererImage, error) {
+	var thinkingParts []string // thinking 内容（放在最前面）
 	var textParts []string
 	var images []types.CodeWhispererImage
 
@@ -61,6 +62,11 @@ func processMessageContent(content any) (string, []types.CodeWhispererImage, err
 						}
 						textParts = append(textParts, parsedContent)
 					}
+				case "thinking":
+					// thinking 块转换为 <thinking> 标签格式，加到正文前面
+					if contentBlock.Text != nil && *contentBlock.Text != "" {
+						thinkingParts = append(thinkingParts, "<thinking>\n"+*contentBlock.Text+"\n</thinking>")
+					}
 				}
 			} else {
 				utils.Log("内容块不是map[string]any类型",
@@ -102,6 +108,11 @@ func processMessageContent(content any) (string, []types.CodeWhispererImage, err
 					}
 					textParts = append(textParts, parsedContent)
 				}
+			case "thinking":
+				// thinking 块转换为 <thinking> 标签格式
+				if block.Text != nil && *block.Text != "" {
+					thinkingParts = append(thinkingParts, "<thinking>\n"+*block.Text+"\n</thinking>")
+				}
 			}
 		}
 
@@ -110,12 +121,17 @@ func processMessageContent(content any) (string, []types.CodeWhispererImage, err
 		return "", nil, fmt.Errorf("不支持的内容类型: %T", content)
 	}
 
-	result := strings.Join(textParts, "")
+	// 组合结果：thinking 内容在前，普通文本在后
+	var allParts []string
+	allParts = append(allParts, thinkingParts...)
+	allParts = append(allParts, textParts...)
+	result := strings.Join(allParts, "\n\n")
 
 	// 保留关键调试信息用于问题定位
 	if result == "" && len(images) == 0 {
 		utils.Log("消息内容处理结果为空",
 			utils.LogString("content_type", fmt.Sprintf("%T", content)),
+			utils.LogInt("thinking_parts_count", len(thinkingParts)),
 			utils.LogInt("text_parts_count", len(textParts)),
 			utils.LogInt("images_count", len(images)))
 	}
@@ -198,6 +214,15 @@ func parseContentBlock(block map[string]any) (types.ContentBlock, error) {
 		if input, ok := block["input"]; ok {
 			contentBlock.Input = &input
 		}
+
+	case "thinking":
+		// 处理 thinking 块，提取 thinking 内容，忽略 signature 字段
+		// Anthropic API 要求在后续请求中保留 thinking 内容，但我们需要将其
+		// 转换为上游 API 可以理解的格式（作为文本或忽略）
+		if thinking, ok := block["thinking"].(string); ok {
+			contentBlock.Text = &thinking
+		}
+		// 注意：signature 字段被故意忽略，不会被传递到上游
 	}
 
 	return contentBlock, nil

@@ -405,6 +405,13 @@ func convertContentBlockStart(m map[string]any) *types.ContentBlockStartEvent {
 				toolBlock.Input = input
 			}
 			block = toolBlock
+		} else if blockType == "thinking" {
+			// thinking 块：使用专用结构体确保 thinking 字段始终存在
+			thinking, _ := cb["thinking"].(string)
+			block = &types.SSEThinkingContentBlock{
+				Type:     "thinking",
+				Thinking: thinking,
+			}
 		} else if blockType != "" {
 			// 其他已知类型
 			sseBlock := &types.SSEContentBlock{}
@@ -433,12 +440,16 @@ func convertContentBlockDelta(m map[string]any) *types.ContentBlockDeltaEvent {
 	deltaType := "text_delta"
 	text := ""
 	partialJSON := ""
+	thinking := ""
+	signature := ""
 	if d, ok := m["delta"].(map[string]any); ok {
 		if t, ok := d["type"].(string); ok && t != "" {
 			deltaType = t
 		}
 		text, _ = d["text"].(string)
 		partialJSON, _ = d["partial_json"].(string)
+		thinking, _ = d["thinking"].(string)
+		signature, _ = d["signature"].(string)
 	}
 
 	// 根据 delta 类型返回相应的结构体（确保字段始终存在）
@@ -448,6 +459,18 @@ func convertContentBlockDelta(m map[string]any) *types.ContentBlockDeltaEvent {
 		delta = &types.InputJSONDeltaBlock{
 			Type:        deltaType,
 			PartialJSON: partialJSON,
+		}
+	case "thinking_delta":
+		// thinking_delta：使用专用结构体确保 thinking 字段存在
+		delta = &types.ThinkingDeltaBlock{
+			Type:     deltaType,
+			Thinking: thinking,
+		}
+	case "signature_delta":
+		// signature_delta：使用专用结构体确保 signature 字段存在
+		delta = &types.SignatureDeltaBlock{
+			Type:      deltaType,
+			Signature: signature,
 		}
 	default:
 		// text_delta 或其他类型

@@ -224,7 +224,7 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 		select {
 		case <-done:
 			return result, err
-		case <-time.After(10 * time.Second): // 10秒超时
+		case <-time.After(600 * time.Second): // 600秒超时
 			utils.Log("非流式解析超时")
 			return nil, fmt.Errorf("解析超时")
 		}
@@ -261,6 +261,9 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	var contexts []map[string]any
 	textAgg := result.GetCompletionText()
 
+	// 检查是否启用了 thinking 模式
+	thinkingEnabled := anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "enabled"
+
 	// 先获取工具管理器的所有工具，确保sawToolUse的判断基于实际工具
 	toolManager := compliantParser.GetToolManager()
 	allTools := make([]*parser.ToolExecution, 0)
@@ -285,12 +288,38 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	// 		utils.LogBool("saw_tool_use", sawToolUse),
 	// 	)...)
 
-	// 添加文本内容
+	// 添加文本内容（如果启用 thinking 模式，需要提取 thinking 块）
 	if textAgg != "" {
-		contexts = append(contexts, map[string]any{
-			"type": "text",
-			"text": textAgg,
-		})
+		if thinkingEnabled {
+			// 提取 thinking 内容
+			thinkingBlocks, cleanText := ExtractThinkingFromFinalText(textAgg)
+
+			// 合并所有 thinking 块为一个
+			if len(thinkingBlocks) > 0 {
+				mergedThinking := strings.Join(thinkingBlocks, "\n\n")
+				if mergedThinking != "" {
+					contexts = append(contexts, map[string]any{
+						"type":      "thinking",
+						"thinking":  mergedThinking,
+						"signature": GenerateFakeSignature(len(mergedThinking)),
+					})
+				}
+			}
+
+			// 添加清理后的文本（如果有）
+			if cleanText != "" {
+				contexts = append(contexts, map[string]any{
+					"type": "text",
+					"text": cleanText,
+				})
+			}
+		} else {
+			// 非 thinking 模式，直接添加文本
+			contexts = append(contexts, map[string]any{
+				"type": "text",
+				"text": textAgg,
+			})
+		}
 	}
 
 	// 添加工具调用
