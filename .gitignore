@@ -40,3 +40,4 @@ auth.json
 *.json
 .go*
 *.out
+!utils/claude_tokenizer.json
