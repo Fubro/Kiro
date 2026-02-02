@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"kiro/config"
-	"strings"
-
 	"kiro/types"
 	"kiro/utils"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 /**
@@ -34,6 +35,8 @@ var (
 	tokenMap = make(map[string]*TokenCache)
 	// tokenMutex Token 缓存互斥锁
 	tokenMutex sync.RWMutex
+	// refreshGroup 用于防止并发刷新同一个 token
+	refreshGroup singleflight.Group
 )
 
 /**
@@ -155,6 +158,7 @@ func RefreshKiroToken(refreshToken string) (string, error) {
 
 /**
  * GetOrRefreshToken 获取或刷新 token，自动识别 Kiro 或 AmazonQ 格式
+ * 使用 singleflight 确保同一个 token 的并发请求只刷新一次
  */
 func GetOrRefreshToken(token string) (string, error) {
 	tokenHash := sha256Hash(token)
@@ -168,36 +172,62 @@ func GetOrRefreshToken(token string) (string, error) {
 		return cached.AccessToken, nil
 	}
 
-	// 解析 token 类型
-	tokenType, clientID, clientSecret, refreshToken := ParseToken(token)
+	// 使用 singleflight 确保同一个 token 只刷新一次
+	result, err, _ := refreshGroup.Do(tokenHash, func() (interface{}, error) {
+		// 双重检查：可能在等待期间已被其他 goroutine 刷新
+		tokenMutex.RLock()
+		cached, exists := tokenMap[tokenHash]
+		tokenMutex.RUnlock()
+		if exists {
+			return cached.AccessToken, nil
+		}
 
-	var accessToken string
-	var err error
+		// 解析 token 类型
+		tokenType, clientID, clientSecret, refreshToken := ParseToken(token)
 
-	switch tokenType {
-	case types.TokenTypeAmazonQ:
-		accessToken, err = RefreshAmazonQToken(clientID, clientSecret, refreshToken)
-	default:
-		accessToken, err = RefreshKiroToken(refreshToken)
-	}
+		var accessToken string
+		var refreshErr error
+
+		switch tokenType {
+		case types.TokenTypeAmazonQ:
+			accessToken, refreshErr = RefreshAmazonQToken(clientID, clientSecret, refreshToken)
+		default:
+			accessToken, refreshErr = RefreshKiroToken(refreshToken)
+		}
+
+		// 获取类型名称用于日志
+		typeName := "Kiro"
+		if tokenType == types.TokenTypeAmazonQ {
+			typeName = "AmazonQ"
+		}
+
+		if refreshErr != nil {
+			utils.Error("AT 刷新失败 [%s]: %v", typeName, refreshErr)
+			return "", refreshErr
+		}
+
+		utils.Info("AT 刷新成功 [%s]", typeName)
+
+		// 缓存
+		tokenMutex.Lock()
+		tokenMap[tokenHash] = &TokenCache{
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			LastRefresh:  time.Now(),
+			TokenType:    tokenType,
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+		}
+		tokenMutex.Unlock()
+
+		return accessToken, nil
+	})
 
 	if err != nil {
 		return "", err
 	}
 
-	// 缓存
-	tokenMutex.Lock()
-	tokenMap[tokenHash] = &TokenCache{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		LastRefresh:  time.Now(),
-		TokenType:    tokenType,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
-	tokenMutex.Unlock()
-
-	return accessToken, nil
+	return result.(string), nil
 }
 
 /**

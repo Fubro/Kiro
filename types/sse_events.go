@@ -65,6 +65,25 @@ type SSETextContentBlock struct {
 	Text string `json:"text"`
 }
 
+// SSEThinkingContentBlock thinking 内容块（需要包含空 thinking 字段）
+type SSEThinkingContentBlock struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature,omitempty"`
+}
+
+// ThinkingDeltaBlock thinking 增量块
+type ThinkingDeltaBlock struct {
+	Type     string `json:"type"`
+	Thinking string `json:"thinking"` // Anthropic API 使用 thinking 字段
+}
+
+// SignatureDeltaBlock signature 增量块
+type SignatureDeltaBlock struct {
+	Type      string `json:"type"`
+	Signature string `json:"signature"`
+}
+
 // ContentBlockDeltaEvent content_block_delta 事件
 // 字段顺序: type, index, delta (与官方 Claude API 一致)
 type ContentBlockDeltaEvent struct {
@@ -206,6 +225,22 @@ func NewTextContentBlock(text string) *SSEContentBlock {
 	return &SSEContentBlock{
 		Type: "text",
 		Text: text,
+	}
+}
+
+// NewThinkingContentBlock 创建 thinking 内容块
+func NewThinkingContentBlock() *SSEThinkingContentBlock {
+	return &SSEThinkingContentBlock{
+		Type:     "thinking",
+		Thinking: "",
+	}
+}
+
+// NewThinkingDelta 创建 thinking delta
+func NewThinkingDelta(thinking string) *ThinkingDeltaBlock {
+	return &ThinkingDeltaBlock{
+		Type:     "thinking_delta",
+		Thinking: thinking,
 	}
 }
 

@@ -155,11 +155,15 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	}
 
 	req.Header.Set("Authorization", "Bearer "+tokenInfo.AccessToken)
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("X-Amz-Target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
-	req.Header.Set("User-Agent", "aws-sdk-rust/1.3.9 os/macos lang/rust/1.87.0")
-	req.Header.Set("X-Amz-User-Agent", "aws-sdk-rust/1.3.9 ua/2.1 api/codewhispererstreaming/1.0.0 os/macos lang/rust/1.87.0 m/E")
+	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.0 KiroIDE-"+config.KiroVersion)
+	req.Header.Set("User-Agent", "aws-sdk-js/1.0.0 ua/2.1 os/windows#10.0 lang/js md/nodejs#20.18.0 api/codewhispererruntime#1.0.0 m/E KiroIDE-"+config.KiroVersion)
+	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("Connection", "close")
 
 	return req, nil
 }
@@ -180,7 +184,7 @@ func handleCodeWhispererError(c *gin.Context, resp *http.Response, isStream bool
 		return &UpstreamError{StatusCode: resp.StatusCode, Message: "读取响应失败"}
 	}
 
-	utils.Error("上游错误: status=%d", resp.StatusCode)
+	utils.Error("上游错误: status=%d, body=%s", resp.StatusCode, string(body))
 
 	// 尝试解析上游错误信息
 	errorMsg := string(body)
@@ -401,6 +405,13 @@ func convertContentBlockStart(m map[string]any) *types.ContentBlockStartEvent {
 				toolBlock.Input = input
 			}
 			block = toolBlock
+		} else if blockType == "thinking" {
+			// thinking 块：使用专用结构体确保 thinking 字段始终存在
+			thinking, _ := cb["thinking"].(string)
+			block = &types.SSEThinkingContentBlock{
+				Type:     "thinking",
+				Thinking: thinking,
+			}
 		} else if blockType != "" {
 			// 其他已知类型
 			sseBlock := &types.SSEContentBlock{}
@@ -429,12 +440,16 @@ func convertContentBlockDelta(m map[string]any) *types.ContentBlockDeltaEvent {
 	deltaType := "text_delta"
 	text := ""
 	partialJSON := ""
+	thinking := ""
+	signature := ""
 	if d, ok := m["delta"].(map[string]any); ok {
 		if t, ok := d["type"].(string); ok && t != "" {
 			deltaType = t
 		}
 		text, _ = d["text"].(string)
 		partialJSON, _ = d["partial_json"].(string)
+		thinking, _ = d["thinking"].(string)
+		signature, _ = d["signature"].(string)
 	}
 
 	// 根据 delta 类型返回相应的结构体（确保字段始终存在）
@@ -444,6 +459,18 @@ func convertContentBlockDelta(m map[string]any) *types.ContentBlockDeltaEvent {
 		delta = &types.InputJSONDeltaBlock{
 			Type:        deltaType,
 			PartialJSON: partialJSON,
+		}
+	case "thinking_delta":
+		// thinking_delta：使用专用结构体确保 thinking 字段存在
+		delta = &types.ThinkingDeltaBlock{
+			Type:     deltaType,
+			Thinking: thinking,
+		}
+	case "signature_delta":
+		// signature_delta：使用专用结构体确保 signature 字段存在
+		delta = &types.SignatureDeltaBlock{
+			Type:      deltaType,
+			Signature: signature,
 		}
 	default:
 		// text_delta 或其他类型

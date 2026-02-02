@@ -83,8 +83,11 @@ var AmazonQOIDCHeaders = map[string]string{
 	"amz-sdk-request":  "attempt=1; max=3",
 }
 
-// CodeWhispererURL CodeWhisperer API的URL
-const CodeWhispererURL = "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
+// CodeWhispererURL Kiro API 的 URL
+const CodeWhispererURL = "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+
+// KiroVersion Kiro IDE 版本号
+const KiroVersion = "0.1.25"
 
 // MaxToolDescriptionLength 工具描述的最大长度（字符数）
 // 可通过环境变量 MAX_TOOL_DESCRIPTION_LENGTH 配置，默认 10000

@@ -110,9 +110,17 @@ func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 		shouldEnableThinking = true
 	}
 
-	// 检查是否显式启用了 Thinking 模式
-	if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "enabled" {
-		shouldEnableThinking = true
+	// 显式配置优先级：
+	// 1) thinking.type="disabled" 可强制禁用（即使模型名带 -thinking）
+	// 2) thinking.type="enabled" 可强制启用
+	if anthropicReq.Thinking != nil {
+		if anthropicReq.Thinking.Type == "disabled" {
+			shouldEnableThinking = false
+		} else if anthropicReq.Thinking.Type == "enabled" {
+			shouldEnableThinking = true
+		}
+
+		// 允许仅设置 budget_tokens（不要求同时写 type）
 		if anthropicReq.Thinking.BudgetTokens > 0 {
 			budgetTokens = anthropicReq.Thinking.BudgetTokens
 		}

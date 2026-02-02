@@ -30,6 +30,14 @@ type StreamProcessorContext struct {
 	// 流解析器
 	compliantParser *parser.CompliantEventStreamParser
 
+	// Thinking 提取器（用于从文本中提取 <thinking> 标签内容）
+	thinkingExtractor    *ThinkingExtractor
+	thinkingEnabled      bool // 是否启用 thinking 模式
+	thinkingBlockStarted bool // thinking 块是否已开始
+	thinkingBlockIndex   int  // thinking 块的索引
+	textBlockIndex       int  // 文本块的索引（thinking 模式下用于发送普通文本）
+	textBlockStarted     bool // 文本块是否已开始
+
 	// 统计信息
 	totalOutputTokens    int // 累计发送给客户端的输出 token 数
 	totalReadBytes       int
@@ -53,6 +61,9 @@ func NewStreamProcessorContext(
 	messageID string,
 	inputTokens int,
 ) *StreamProcessorContext {
+	// 检查是否启用了 thinking 模式
+	thinkingEnabled := req.Thinking != nil && req.Thinking.Type == "enabled"
+
 	return &StreamProcessorContext{
 		c:                     c,
 		req:                   req,
@@ -64,6 +75,12 @@ func NewStreamProcessorContext(
 		stopReasonManager:     NewStopReasonManager(req),
 		tokenEstimator:        utils.NewTokenEstimator(),
 		compliantParser:       parser.NewCompliantEventStreamParser(),
+		thinkingExtractor:     NewThinkingExtractor(),
+		thinkingEnabled:       thinkingEnabled,
+		thinkingBlockStarted:  false,
+		thinkingBlockIndex:    -1,
+		textBlockIndex:        -1,
+		textBlockStarted:      false,
 		toolUseIdByBlockIndex: make(map[int]string),
 		completedToolUseIds:   make(map[string]bool),
 		jsonBytesByBlockIndex: make(map[int]int), // *** 初始化JSON字节累加器 ***
@@ -76,6 +93,11 @@ func (ctx *StreamProcessorContext) Cleanup() {
 	// 重置解析器状态
 	if ctx.compliantParser != nil {
 		ctx.compliantParser.Reset()
+	}
+
+	// 重置 thinking 提取器
+	if ctx.thinkingExtractor != nil {
+		ctx.thinkingExtractor.Reset()
 	}
 
 	// 清理工具调用映射
@@ -99,6 +121,7 @@ func (ctx *StreamProcessorContext) Cleanup() {
 	ctx.sseStateManager = nil
 	ctx.stopReasonManager = nil
 	ctx.tokenEstimator = nil
+	ctx.thinkingExtractor = nil
 }
 
 // initializeSSEResponse 初始化SSE响应头
@@ -380,13 +403,45 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 	switch eventType {
 	case "content_block_start":
 		esp.ctx.processToolUseStart(dataMap)
+		// 如果启用 thinking 模式，转换 thinking 块格式
+		if esp.ctx.thinkingEnabled {
+			if cb, ok := dataMap["content_block"].(map[string]any); ok {
+				if cbType, _ := cb["type"].(string); cbType == "thinking" {
+					// 添加空 thinking 字段以符合 Anthropic API 格式
+					cb["thinking"] = ""
+				}
+			}
+		}
 
 	case "content_block_delta":
-		// 直传：不做聚合
-		// 但需要统计输出字符数（在后面统一处理）
+		// 如果启用 thinking 模式，转换 thinking_delta 格式
+		if esp.ctx.thinkingEnabled {
+			if delta, ok := dataMap["delta"].(map[string]any); ok {
+				if deltaType, _ := delta["type"].(string); deltaType == "thinking_delta" {
+					// 将 text 字段改为 thinking 字段
+					if text, exists := delta["text"]; exists {
+						delta["thinking"] = text
+						delete(delta, "text")
+					}
+				}
+			}
+			// 检查是否需要处理 thinking 提取（从 text_delta 中提取 <thinking> 标签）
+			if handled, err := esp.handleThinkingDelta(dataMap); err != nil {
+				return err
+			} else if handled {
+				esp.ctx.c.Writer.Flush()
+				return nil // thinking 已处理，不需要继续
+			}
+		}
 
 	case "content_block_stop":
 		esp.ctx.processToolUseStop(dataMap)
+		// 如果启用了 thinking 模式，在块结束时刷新提取器
+		if esp.ctx.thinkingEnabled {
+			if err := esp.flushThinkingExtractor(); err != nil {
+				utils.Log("刷新 thinking 提取器失败", utils.LogErr(err))
+			}
+		}
 
 	case "message_delta":
 
@@ -458,6 +513,239 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 	}
 
 	esp.ctx.c.Writer.Flush()
+	return nil
+}
+
+// handleThinkingDelta 处理 thinking 模式下的 text_delta 事件
+// 返回 (handled, error) - handled 为 true 表示事件已被处理，不需要原样转发
+func (esp *EventStreamProcessor) handleThinkingDelta(dataMap map[string]any) (bool, error) {
+	delta, ok := dataMap["delta"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+
+	deltaType, _ := delta["type"].(string)
+	if deltaType != "text_delta" {
+		return false, nil
+	}
+
+	text, ok := delta["text"].(string)
+	if !ok || text == "" {
+		return false, nil
+	}
+
+	// 使用流式 thinking 提取器处理文本
+	result := esp.ctx.thinkingExtractor.ProcessTextStreaming(text)
+
+	// 处理 thinking 块开始
+	if result.ThinkingStarted {
+		// 分配新的 thinking 块索引
+		esp.ctx.thinkingBlockIndex = esp.ctx.sseStateManager.AllocateBlockIndex()
+		esp.ctx.thinkingBlockStarted = true
+
+		// 发送 content_block_start 事件
+		startEvent := map[string]any{
+			"type":  "content_block_start",
+			"index": esp.ctx.thinkingBlockIndex,
+			"content_block": map[string]any{
+				"type":     "thinking",
+				"thinking": "",
+			},
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, startEvent); err != nil {
+			utils.Log("发送 thinking block start 失败", utils.LogErr(err))
+			return true, err
+		}
+	}
+
+	// 处理 thinking 增量内容（立即转发）
+	if result.ThinkingDelta != "" && esp.ctx.thinkingBlockStarted {
+		deltaEvent := map[string]any{
+			"type":  "content_block_delta",
+			"index": esp.ctx.thinkingBlockIndex,
+			"delta": map[string]any{
+				"type":     "thinking_delta",
+				"thinking": result.ThinkingDelta,
+			},
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, deltaEvent); err != nil {
+			utils.Log("发送 thinking delta 失败", utils.LogErr(err))
+			return true, err
+		}
+
+		// 累计 token
+		esp.ctx.totalOutputTokens += esp.ctx.tokenEstimator.EstimateTextTokens(result.ThinkingDelta)
+	}
+
+	// 处理 thinking 块结束
+	if result.ThinkingEnded && esp.ctx.thinkingBlockStarted {
+		// 发送 signature_delta 事件
+		signatureDeltaEvent := map[string]any{
+			"type":  "content_block_delta",
+			"index": esp.ctx.thinkingBlockIndex,
+			"delta": map[string]any{
+				"type":      "signature_delta",
+				"signature": result.Signature,
+			},
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, signatureDeltaEvent); err != nil {
+			utils.Log("发送 signature delta 失败", utils.LogErr(err))
+			return true, err
+		}
+
+		// 发送 content_block_stop 事件
+		stopEvent := map[string]any{
+			"type":  "content_block_stop",
+			"index": esp.ctx.thinkingBlockIndex,
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, stopEvent); err != nil {
+			utils.Log("发送 thinking block stop 失败", utils.LogErr(err))
+			return true, err
+		}
+
+		esp.ctx.thinkingBlockStarted = false
+	}
+
+	// 处理普通文本内容
+	if result.TextDelta != "" {
+		// 如果文本块未开启，先开启一个新的文本块
+		if !esp.ctx.textBlockStarted {
+			esp.ctx.textBlockIndex = esp.ctx.sseStateManager.AllocateBlockIndex()
+			esp.ctx.textBlockStarted = true
+
+			// 发送 content_block_start 事件
+			startEvent := map[string]any{
+				"type":  "content_block_start",
+				"index": esp.ctx.textBlockIndex,
+				"content_block": map[string]any{
+					"type": "text",
+					"text": "",
+				},
+			}
+
+			if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, startEvent); err != nil {
+				utils.Log("发送 text block start 失败", utils.LogErr(err))
+				return true, err
+			}
+		}
+
+		// 发送文本 delta 事件
+		textDeltaEvent := map[string]any{
+			"type":  "content_block_delta",
+			"index": esp.ctx.textBlockIndex,
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": result.TextDelta,
+			},
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, textDeltaEvent); err != nil {
+			utils.Log("发送文本 delta 失败", utils.LogErr(err))
+		}
+
+		// 累计 token
+		esp.ctx.totalOutputTokens += esp.ctx.tokenEstimator.EstimateTextTokens(result.TextDelta)
+	}
+
+	// 如果有任何内容被处理，则认为事件已处理
+	return result.ThinkingStarted || result.ThinkingDelta != "" || result.ThinkingEnded || result.TextDelta != "" || result.HasPending, nil
+}
+
+// flushThinkingExtractor 刷新 thinking 提取器中的剩余内容
+func (esp *EventStreamProcessor) flushThinkingExtractor() error {
+	if esp.ctx.thinkingExtractor == nil {
+		return nil
+	}
+
+	result := esp.ctx.thinkingExtractor.FlushStreaming()
+
+	// 如果还有 thinking 块未结束，发送 signature_delta 和 stop 事件
+	if result.ThinkingEnded && esp.ctx.thinkingBlockStarted {
+		// 发送 signature_delta 事件
+		if result.Signature != "" {
+			signatureDeltaEvent := map[string]any{
+				"type":  "content_block_delta",
+				"index": esp.ctx.thinkingBlockIndex,
+				"delta": map[string]any{
+					"type":      "signature_delta",
+					"signature": result.Signature,
+				},
+			}
+
+			if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, signatureDeltaEvent); err != nil {
+				utils.Log("flush 时发送 signature delta 失败", utils.LogErr(err))
+			}
+		}
+
+		// 发送 content_block_stop 事件
+		stopEvent := map[string]any{
+			"type":  "content_block_stop",
+			"index": esp.ctx.thinkingBlockIndex,
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, stopEvent); err != nil {
+			utils.Log("flush 时发送 thinking block stop 失败", utils.LogErr(err))
+		}
+
+		esp.ctx.thinkingBlockStarted = false
+	}
+
+	// 处理剩余的普通文本（如果有的话）
+	if result.TextDelta != "" {
+		// 如果文本块未开启，先开启一个新的文本块
+		if !esp.ctx.textBlockStarted {
+			esp.ctx.textBlockIndex = esp.ctx.sseStateManager.AllocateBlockIndex()
+			esp.ctx.textBlockStarted = true
+
+			// 发送 content_block_start 事件
+			startEvent := map[string]any{
+				"type":  "content_block_start",
+				"index": esp.ctx.textBlockIndex,
+				"content_block": map[string]any{
+					"type": "text",
+					"text": "",
+				},
+			}
+
+			if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, startEvent); err != nil {
+				utils.Log("flush 时发送 text block start 失败", utils.LogErr(err))
+			}
+		}
+
+		textDeltaEvent := map[string]any{
+			"type":  "content_block_delta",
+			"index": esp.ctx.textBlockIndex,
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": result.TextDelta,
+			},
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, textDeltaEvent); err != nil {
+			utils.Log("发送剩余文本 delta 失败", utils.LogErr(err))
+		}
+
+		esp.ctx.totalOutputTokens += esp.ctx.tokenEstimator.EstimateTextTokens(result.TextDelta)
+	}
+
+	// 关闭文本块（如果已开启）
+	if esp.ctx.textBlockStarted {
+		stopEvent := map[string]any{
+			"type":  "content_block_stop",
+			"index": esp.ctx.textBlockIndex,
+		}
+
+		if err := esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, stopEvent); err != nil {
+			utils.Log("关闭文本块失败", utils.LogErr(err))
+		}
+
+		esp.ctx.textBlockStarted = false
+	}
+
 	return nil
 }
 
