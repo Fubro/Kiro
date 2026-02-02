@@ -9,7 +9,6 @@ import (
 	"kiro/utils"
 
 	"strings"
-	"sync"
 )
 
 // RobustEventStreamParser 带CRC校验和错误恢复的解析器
@@ -19,8 +18,7 @@ type RobustEventStreamParser struct {
 	maxErrors    int
 	crcTable     *crc32.Table
 	buffer       *bytes.Buffer // 使用标准库bytes.Buffer替代RingBuffer
-	// 并发访问控制
-	mu sync.RWMutex // 保护并发访问
+	// 注意: 每个请求创建独立的解析器实例，无需并发保护
 }
 
 // NewRobustEventStreamParser 创建健壮的事件流解析器
@@ -47,13 +45,8 @@ func (rp *RobustEventStreamParser) Reset() {
 }
 
 // ParseStream 解析流数据并返回消息
+// 注意: 每个请求创建独立的解析器实例，无需并发保护
 func (rp *RobustEventStreamParser) ParseStream(data []byte) ([]*EventStreamMessage, error) {
-	// 并发访问保护
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	// mutex已经保证了互斥访问，无需额外的parsingActive标志
-	// 直接解析数据，避免数据丢失
 	return rp.parseStreamWithBuffer(data)
 }
 

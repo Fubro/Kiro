@@ -64,8 +64,11 @@ func (c *PromptCache) Get(hash string) (*CacheEntry, bool) {
 		return nil, false
 	}
 
+	// 使用单次 time.Now() 调用
+	now := time.Now()
+
 	// 检查是否过期
-	if time.Now().After(entry.ExpTime) {
+	if now.After(entry.ExpTime) {
 		// 已过期，删除条目
 		c.mu.Lock()
 		delete(c.entries, hash)
@@ -73,9 +76,9 @@ func (c *PromptCache) Get(hash string) (*CacheEntry, bool) {
 		return nil, false
 	}
 
-	// 刷新 TTL
+	// 刷新 TTL（使用已获取的 now）
 	c.mu.Lock()
-	entry.ExpTime = calculateExpTime(entry.TTL)
+	entry.ExpTime = calculateExpTimeFrom(now, entry.TTL)
 	c.mu.Unlock()
 
 	return entry, true
@@ -140,6 +143,7 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 
 	estimator := utils.NewTokenEstimator()
 	result := &CacheResult{TotalTokens: inputTokens}
+	minTokens := GetMinCacheTokens(req.Model)
 
 	// 处理 system 消息
 	for _, sysMsg := range req.System {
@@ -149,7 +153,7 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 		hash := computeHash(sysMsg.Text)
 		tokens := estimator.EstimateTextTokens(sysMsg.Text) + 2 // 系统提示固定开销
 
-		processContentBlock(pc, hash, tokens, sysMsg.CacheControl, result)
+		processContentBlock(pc, hash, tokens, sysMsg.CacheControl, minTokens, result)
 	}
 
 	// 处理 messages
@@ -162,7 +166,7 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 			hash := computeHash(content)
 			tokens := estimator.EstimateTextTokens(content)
 			// 无 cache_control 标记的字符串消息，仅自动命中
-			processContentBlock(pc, hash, tokens, nil, result)
+			processContentBlock(pc, hash, tokens, nil, minTokens, result)
 
 		case []any:
 			for _, block := range content {
@@ -170,12 +174,12 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 				if !ok {
 					continue
 				}
-				processRawContentBlock(pc, estimator, blockMap, result)
+				processRawContentBlock(pc, estimator, blockMap, minTokens, result)
 			}
 
 		case []types.ContentBlock:
 			for _, block := range content {
-				processTypedContentBlock(pc, estimator, block, result)
+				processTypedContentBlock(pc, estimator, block, minTokens, result)
 			}
 		}
 	}
@@ -184,15 +188,16 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 }
 
 // processContentBlock 处理单个内容块的缓存逻辑
-func processContentBlock(pc *PromptCache, hash string, tokens int, cc *types.CacheControl, result *CacheResult) {
+// minTokens: 根据模型决定的最小可缓存 token 数
+func processContentBlock(pc *PromptCache, hash string, tokens int, cc *types.CacheControl, minTokens int, result *CacheResult) {
 	hasCacheControl := cc != nil && cc.Type == "ephemeral"
 
 	entry, exists := pc.Get(hash)
 	if exists {
 		// 缓存命中（无论是否带 cache_control 标记）
 		result.CacheReadTokens += entry.Tokens
-	} else if hasCacheControl {
-		// 有 cache_control 标记且缓存不存在 → 创建缓存
+	} else if hasCacheControl && tokens >= minTokens {
+		// 有 cache_control 标记、缓存不存在、且 token 数达到最小要求 → 创建缓存
 		ttl := cc.TTL
 		if ttl == "" {
 			ttl = "5m" // 默认 5 分钟
@@ -200,11 +205,11 @@ func processContentBlock(pc *PromptCache, hash string, tokens int, cc *types.Cac
 		pc.Set(hash, tokens, ttl)
 		result.CacheCreationTokens += tokens
 	}
-	// 无 cache_control 且缓存不存在 → 不创建缓存，正常计算
+	// 无 cache_control 或 token 数不足 → 不创建缓存，正常计算
 }
 
 // processRawContentBlock 处理原始 map 格式的内容块
-func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, blockMap map[string]any, result *CacheResult) {
+func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, blockMap map[string]any, minTokens int, result *CacheResult) {
 	blockType, _ := blockMap["type"].(string)
 
 	// 提取 cache_control
@@ -261,7 +266,33 @@ func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, bl
 			return
 		}
 		hash = computeHashBytes(data)
-		tokens = 1500 // 图片固定估算
+		// 尝试从 source 获取 base64 数据计算精确 token
+		if source, ok := blockMap["source"].(map[string]any); ok {
+			if imgData, ok := source["data"].(string); ok && imgData != "" {
+				tokens = utils.EstimateImageTokensFromBase64(imgData)
+			} else {
+				tokens = 1500 // 无法获取数据时使用默认值
+			}
+		} else {
+			tokens = 1500
+		}
+
+	case "document":
+		data, err := json.Marshal(blockMap)
+		if err != nil {
+			return
+		}
+		hash = computeHashBytes(data)
+		// 尝试从 source 获取 base64 数据估算 token
+		if source, ok := blockMap["source"].(map[string]any); ok {
+			if docData, ok := source["data"].(string); ok && docData != "" {
+				tokens = utils.EstimateDocumentTokensFromBase64(docData)
+			} else {
+				tokens = 500 // 无法获取数据时使用默认值
+			}
+		} else {
+			tokens = 500
+		}
 
 	default:
 		data, err := json.Marshal(blockMap)
@@ -275,11 +306,11 @@ func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, bl
 		}
 	}
 
-	processContentBlock(pc, hash, tokens, cc, result)
+	processContentBlock(pc, hash, tokens, cc, minTokens, result)
 }
 
 // processTypedContentBlock 处理类型化内容块
-func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, block types.ContentBlock, result *CacheResult) {
+func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, block types.ContentBlock, minTokens int, result *CacheResult) {
 	var hash string
 	var tokens int
 
@@ -309,6 +340,19 @@ func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, 
 		}
 		tokens = estimator.EstimateToolUseTokens(toolName, toolInput)
 
+	case "image":
+		data, err := json.Marshal(block)
+		if err != nil {
+			return
+		}
+		hash = computeHashBytes(data)
+		// 尝试从 Source 获取 base64 数据计算精确 token
+		if block.Source != nil && block.Source.Data != "" {
+			tokens = utils.EstimateImageTokensFromBase64(block.Source.Data)
+		} else {
+			tokens = 1500 // 无法获取数据时使用默认值
+		}
+
 	default:
 		data, err := json.Marshal(block)
 		if err != nil {
@@ -321,7 +365,7 @@ func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, 
 		}
 	}
 
-	processContentBlock(pc, hash, tokens, block.CacheControl, result)
+	processContentBlock(pc, hash, tokens, block.CacheControl, minTokens, result)
 }
 
 // computeHash 计算字符串内容的 SHA-256 哈希
@@ -338,12 +382,17 @@ func computeHashBytes(data []byte) string {
 
 // calculateExpTime 根据 TTL 字符串计算过期时间
 func calculateExpTime(ttl string) time.Time {
+	return calculateExpTimeFrom(time.Now(), ttl)
+}
+
+// calculateExpTimeFrom 基于给定时间计算过期时间（避免重复调用 time.Now()）
+func calculateExpTimeFrom(now time.Time, ttl string) time.Time {
 	switch ttl {
 	case "1h":
-		return time.Now().Add(1 * time.Hour)
+		return now.Add(1 * time.Hour)
 	default:
 		// 默认 5 分钟
-		return time.Now().Add(5 * time.Minute)
+		return now.Add(5 * time.Minute)
 	}
 }
 
@@ -353,4 +402,27 @@ func getStr(m map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// GetMinCacheTokens 根据模型返回最小可缓存 token 数
+// 参考: https://platform.claude.com/docs/en/build-with-claude/prompt-caching#cache-limitations
+func GetMinCacheTokens(model string) int {
+	// Claude Opus 4.5: 4096
+	// Claude Opus 4.1/4, Sonnet 4.5/4/3.7: 1024
+	// Claude Haiku 4.5: 4096
+	// Claude Haiku 3.5/3: 2048
+	switch {
+	case utils.ContainsAny(model, "opus-4-5", "opus-4.5"):
+		return 4096
+	case utils.ContainsAny(model, "opus"):
+		return 1024
+	case utils.ContainsAny(model, "haiku-4-5", "haiku-4.5"):
+		return 4096
+	case utils.ContainsAny(model, "haiku"):
+		return 2048
+	case utils.ContainsAny(model, "sonnet"):
+		return 1024
+	default:
+		return 1024 // 默认使用最小值
+	}
 }

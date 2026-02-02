@@ -369,6 +369,11 @@ func (esp *EventStreamProcessor) ProcessEventStream(reader io.Reader) error {
 					return err
 				}
 			}
+
+			// 批量 Flush：处理完一批事件后统一刷新，避免每个事件都 Flush
+			if len(events) > 0 {
+				esp.ctx.c.Writer.Flush()
+			}
 		}
 
 		if err != nil {
@@ -433,8 +438,7 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 			if handled, err := esp.handleThinkingDelta(dataMap); err != nil {
 				return err
 			} else if handled {
-				esp.ctx.c.Writer.Flush()
-				return nil // thinking 已处理，不需要继续
+				return nil // thinking 已处理，不需要继续（Flush 已移至批量处理）
 			}
 		}
 
@@ -516,7 +520,7 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 		// 不包含实际内容，不累计 token
 	}
 
-	esp.ctx.c.Writer.Flush()
+	// 注意: Flush 已移至 ProcessEventStream 中批量处理
 	return nil
 }
 

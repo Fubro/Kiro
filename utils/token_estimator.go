@@ -191,10 +191,22 @@ func (e *TokenEstimator) estimateContentBlock(block any) int {
 		return 10
 
 	case "image":
-		return 1500
+		// 尝试从 source 获取 base64 数据计算精确 token
+		if source, ok := blockMap["source"].(map[string]any); ok {
+			if data, ok := source["data"].(string); ok && data != "" {
+				return EstimateImageTokensFromBase64(data)
+			}
+		}
+		return 1500 // 无法获取数据时使用默认值
 
 	case "document":
-		return 500
+		// 尝试从 source 获取 base64 数据估算 token
+		if source, ok := blockMap["source"].(map[string]any); ok {
+			if data, ok := source["data"].(string); ok && data != "" {
+				return EstimateDocumentTokensFromBase64(data)
+			}
+		}
+		return 500 // 无法获取数据时使用默认值
 
 	case "tool_use":
 		toolName, _ := blockMap["name"].(string)
@@ -234,7 +246,11 @@ func (e *TokenEstimator) estimateTypedContentBlock(block types.ContentBlock) int
 		return 10
 
 	case "image":
-		return 1500
+		// 尝试从 Source 获取 base64 数据计算精确 token
+		if block.Source != nil && block.Source.Data != "" {
+			return EstimateImageTokensFromBase64(block.Source.Data)
+		}
+		return 1500 // 无法获取数据时使用默认值
 
 	case "tool_use":
 		toolName := ""

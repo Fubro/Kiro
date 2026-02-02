@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // ==================== UUID ====================
@@ -87,4 +88,17 @@ func SafeUnmarshal(data []byte, v any) error {
 // MarshalIndent 带缩进的JSON序列化
 func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
 	return json.MarshalIndent(v, prefix, indent)
+}
+
+// ==================== String ====================
+
+// ContainsAny 检查字符串是否包含任一子串（不区分大小写）
+func ContainsAny(s string, substrs ...string) bool {
+	lower := strings.ToLower(s)
+	for _, sub := range substrs {
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
 }

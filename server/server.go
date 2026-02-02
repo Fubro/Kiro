@@ -19,8 +19,8 @@ import (
  * StartServer 启动HTTP代理服务器
  */
 func StartServer(port string) {
-	// 初始化 Prompt Cache（每分钟清理过期条目）
-	cache.InitGlobalCache(1 * time.Minute)
+	// 初始化 Prompt Cache（每5分钟清理过期条目）
+	cache.InitGlobalCache(5 * time.Minute)
 
 	// 设置 gin 模式
 	ginMode := os.Getenv("GIN_MODE")
