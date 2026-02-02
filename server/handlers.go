@@ -127,9 +127,15 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 
 // createAnthropicStreamEvents 创建Anthropic流式初始事件
 func createAnthropicStreamEvents(messageId string, inputTokens int, model string, cacheResult *cache.CacheResult) []map[string]any {
+	// 计算实际 input_tokens（扣除 cache_read）
+	actualInputTokens := inputTokens
+	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
+		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	}
+
 	// 构建 usage 对象
 	usage := map[string]any{
-		"input_tokens":  inputTokens,
+		"input_tokens":  actualInputTokens,
 		"output_tokens": 0,
 	}
 	if cacheResult != nil {
@@ -163,7 +169,13 @@ func createAnthropicStreamEvents(messageId string, inputTokens int, model string
 }
 
 // createAnthropicFinalEvents 创建Anthropic流式结束事件
-func createAnthropicFinalEvents(outputTokens, inputTokens int, stopReason string) []map[string]any {
+func createAnthropicFinalEvents(outputTokens, inputTokens int, stopReason string, cacheResult *cache.CacheResult) []map[string]any {
+	// 计算实际 input_tokens（扣除 cache_read）
+	actualInputTokens := inputTokens
+	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
+		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	}
+
 	// 删除硬编码的content_block_stop，依赖sendFinalEvents的动态保护机制
 	// sendFinalEvents在调用本函数前已经自动关闭所有未关闭的content_block（stream_processor.go:353-365）
 	// 这样避免了重复发送content_block_stop导致的违规错误
@@ -181,7 +193,7 @@ func createAnthropicFinalEvents(outputTokens, inputTokens int, stopReason string
 			},
 			"usage": map[string]any{
 				"output_tokens": outputTokens,
-				"input_tokens":  inputTokens,
+				"input_tokens":  actualInputTokens,
 			},
 		},
 		{
@@ -431,8 +443,14 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	// 	utils.LogInt("output_tokens", outputTokens))
 
 	// 构建 usage 对象
+	// 计算实际 input_tokens（扣除 cache_read）
+	actualInputTokens := inputTokens
+	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
+		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	}
+
 	usageMap := map[string]any{
-		"input_tokens":  inputTokens,
+		"input_tokens":  actualInputTokens,
 		"output_tokens": outputTokens,
 	}
 	if cacheResult != nil {

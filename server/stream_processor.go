@@ -295,7 +295,7 @@ func (ctx *StreamProcessorContext) sendFinalEvents() error {
 		utils.LogInt("output_tokens", outputTokens))
 
 	// 创建并发送结束事件
-	finalEvents := createAnthropicFinalEvents(outputTokens, ctx.inputTokens, stopReason)
+	finalEvents := createAnthropicFinalEvents(outputTokens, ctx.inputTokens, stopReason, ctx.cacheResult)
 	for _, event := range finalEvents {
 		if err := ctx.sseStateManager.SendEvent(ctx.c, ctx.sender, event); err != nil {
 			utils.Log("结束事件发送违规", utils.LogErr(err))
@@ -780,6 +780,12 @@ func (esp *EventStreamProcessor) handleExceptionEvent(dataMap map[string]any) bo
 			}
 		}
 
+		// 计算实际 input_tokens（扣除 cache_read）
+		actualInputTokens := esp.ctx.inputTokens
+		if esp.ctx.cacheResult != nil && esp.ctx.cacheResult.CacheReadTokens > 0 {
+			actualInputTokens = esp.ctx.inputTokens - esp.ctx.cacheResult.CacheReadTokens
+		}
+
 		// 构造符合Claude规范的max_tokens响应
 		maxTokensEvent := map[string]any{
 			"type": "message_delta",
@@ -788,7 +794,7 @@ func (esp *EventStreamProcessor) handleExceptionEvent(dataMap map[string]any) bo
 				"stop_sequence": nil,
 			},
 			"usage": map[string]any{
-				"input_tokens":  esp.ctx.inputTokens,
+				"input_tokens":  actualInputTokens,
 				"output_tokens": esp.ctx.totalOutputTokens,
 			},
 		}
