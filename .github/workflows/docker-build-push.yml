@@ -19,15 +19,15 @@ jobs:
       packages: write
     strategy:
       matrix:
-        arch: [amd64, arm64]steps:
+        arch: [amd64, arm64]
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-          cache: true
+          go-version: '1.24'cache: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -35,13 +35,15 @@ jobs:
       - name: Extract project info
         id: info
         run: |
-          PROJECT_NAME=$(grep '^project_name=' .version | cut -d'=' -f2 | tr '[:upper:]' '[:lower:]')
+          PROJECT_NAME=$(grep'^project_name=' .version | cut -d'=' -f2 | tr '[:upper:]' '[:lower:]')
           VERSION=$(grep '^version=' .version | cut -d'=' -f2)
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
 
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_OUTPUT
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUTif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "TAG=v${VERSION}" >> $GITHUB_OUTPUT
           else
             SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
