@@ -1,12 +1,14 @@
 name: Build and Push Docker Image
 on:
   push:
-    branches: [ "main" ]paths:
+    branches: [ "main" ]
+    paths:
       - '.version'
   pull_request:
     branches: [ "main" ]
     paths:
-      - '.version'workflow_dispatch:
+      - '.version'
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -25,7 +27,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache: true  # 自动缓存 Go 模块
+          cache: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -33,7 +35,7 @@ jobs:
       - name: Extract project info
         id: info
         run: |
-          PROJECT_NAME=$(grep'^project_name=' .version | cut -d'=' -f2 | tr '[:upper:]' '[:lower:]')
+          PROJECT_NAME=$(grep '^project_name=' .version | cut -d'=' -f2 | tr '[:upper:]' '[:lower:]')
           VERSION=$(grep '^version=' .version | cut -d'=' -f2)
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
 
@@ -48,7 +50,6 @@ jobs:
             echo "TAG=v${VERSION}-${SHORT_SHA}" >> $GITHUB_OUTPUT
           fi
 
-      # Go 原生交叉编译，无需 QEMU
       - name: Build binary
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
@@ -65,7 +66,6 @@ jobs:
         run: |
           IMAGE=ghcr.io/${{ steps.info.outputs.REPO_OWNER }}/${{ steps.info.outputs.PROJECT_NAME }}
 
-          # 创建简单的 Dockerfile
           cat > Dockerfile.ci <<EOF
           FROM scratch
           COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
@@ -97,7 +97,6 @@ jobs:
             project.txt
             owner.txt
 
-  # 合并多架构 manifest
   create-manifest:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -128,7 +127,6 @@ jobs:
           IMAGE=ghcr.io/${{ steps.info.outputs.REPO_OWNER }}/${{ steps.info.outputs.PROJECT_NAME }}
           TAG=${{ steps.info.outputs.TAG }}
 
-          # 创建多架构 manifest
           docker manifest create ${IMAGE}:${TAG} \
             ${IMAGE}:${TAG}-amd64 \
             ${IMAGE}:${TAG}-arm64
@@ -137,10 +135,9 @@ jobs:
             ${IMAGE}:${TAG}-amd64 \
             ${IMAGE}:${TAG}-arm64
 
-          # 推送
           docker manifest push ${IMAGE}:${TAG}
           docker manifest push ${IMAGE}:latest
 
-          echo "✅ Multi-arch manifest pushed!"
+          echo "Multi-arch manifest pushed!"
           echo "  - ${IMAGE}:${TAG}"
           echo "  - ${IMAGE}:latest"
